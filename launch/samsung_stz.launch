@@ -1,0 +1,34 @@
+<launch>
+    <node name="cube_detection" pkg="cube_detection" type="cube_detection.py" output="screen" args="">
+        <param name="delta_len" value="1.0"/>
+        <param name="delta_yaw" value="0.33"/>
+        <param name="allowed_angle" value="5.0"/>
+        <param name="allowed_angular_speed" value="5.0"/>
+        <param name="send_pairs_default" value="0"/>
+    </node>
+    <node name="samsung_stz_main" pkg="samsung_stz_main" type="samsung_stz_main" output="screen" args="">
+<!--Процент высоты картинки выше которого мы объекты не рассматриваем как кубы-->
+        <param name="min_y_position" value="0.6"/>
+<!--Минимальная уверенность детектора ниже которой объекты не рассматриваются-->
+        <param name="minimal_conf" value="0.6"/>
+<!--Максимально допустимое изменение размера куба при сопровождении между кадрами-->
+<!--abs(old_w-new_w)/old_w<... and abs(old_h-new_h)/old_h<...-->
+        <param name="maximal_cube_size_change_allowed" value="0.05"/>
+<!--Минимально допустимое смещение (в размерах рамки) при котором сопровождение считается потерянным-->
+        <param name="maximal_displacement_allowed" value="0.5"/>
+<!--Максимальная угловая скорость платформы, ограничение в целях безопасности-->
+        <param name="max_angular_speed" value="0.3"/>
+<!--Минимальная угловая скорость платформы, ограничение в целях безопасности-->
+        <param name="min_angular_speed" value="0.001"/>
+<!--Максимальная линейная скорость платформы, ограничение в целях безопасности-->
+        <param name="max_linear_speed" value="0.8"/>
+<!--Минимальная линейная скорость платформы, ограничение в целях безопасности-->
+        <param name="min_linear_speed" value="0.05"/>
+<!--Множитель для относительного смещения объекта от центра изображения по вертикали (угловая скорость)-->
+        <param name="horizontal_displacement_multiplier" value="0.5"/>
+<!--Множитель для относительного смещения объекта от минимального положения по горизонтали (линейная скорость)-->
+        <param name="vertical_displacement_multiplier" value="0.3333335"/>
+<!--Минимальное положение по вертикали ("желаемая" позиция куба по Y) (в % от высоты изображения)-->
+        <param name="vertical_desired_pos_rel" value="0.98"/>
+    </node>
+</launch>
