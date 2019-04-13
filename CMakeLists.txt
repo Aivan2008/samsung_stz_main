@@ -16,6 +16,7 @@ find_package(catkin REQUIRED COMPONENTS
   laser_geometry
   geometry_msgs
   message_generation
+  move_base_msgs
   object_detection_msgs
   pcl_ros
 )

@@ -10,7 +10,7 @@
 <!--Процент высоты картинки выше которого мы объекты не рассматриваем как кубы-->
         <param name="min_y_position" value="0.6"/>
 <!--Минимальная уверенность детектора ниже которой объекты не рассматриваются-->
-        <param name="minimal_conf" value="0.6"/>
+        <param name="minimal_conf" value="0.7"/>
 <!--Максимально допустимое изменение размера куба при сопровождении между кадрами-->
 <!--abs(old_w-new_w)/old_w<... and abs(old_h-new_h)/old_h<...-->
         <param name="maximal_cube_size_change_allowed" value="0.05"/>
