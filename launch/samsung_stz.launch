@@ -1,21 +1,12 @@
 <launch>
     <node name="cube_detection" pkg="cube_detection" type="cube_detection.py" output="screen" args="">
-        <param name="delta_len" value="1.0"/>
-        <param name="delta_yaw" value="0.33"/>
-        <param name="allowed_angle" value="5.0"/>
-        <param name="allowed_angular_speed" value="5.0"/>
-        <param name="send_pairs_default" value="0"/>
     </node>
     <node name="samsung_stz_main" pkg="samsung_stz_main" type="samsung_stz_main" output="screen" args="">
 <!--Процент высоты картинки выше которого мы объекты не рассматриваем как кубы-->
         <param name="min_y_position" value="0.6"/>
 <!--Минимальная уверенность детектора ниже которой объекты не рассматриваются-->
         <param name="minimal_conf" value="0.7"/>
-<!--Максимально допустимое изменение размера куба при сопровождении между кадрами-->
-<!--abs(old_w-new_w)/old_w<... and abs(old_h-new_h)/old_h<...-->
-        <param name="maximal_cube_size_change_allowed" value="0.05"/>
-<!--Минимально допустимое смещение (в размерах рамки) при котором сопровождение считается потерянным-->
-        <param name="maximal_displacement_allowed" value="0.5"/>
+
 <!--Максимальная угловая скорость платформы, ограничение в целях безопасности-->
         <param name="max_angular_speed" value="0.3"/>
 <!--Минимальная угловая скорость платформы, ограничение в целях безопасности-->
@@ -24,11 +15,23 @@
         <param name="max_linear_speed" value="0.8"/>
 <!--Минимальная линейная скорость платформы, ограничение в целях безопасности-->
         <param name="min_linear_speed" value="0.05"/>
-<!--Множитель для относительного смещения объекта от центра изображения по вертикали (угловая скорость)-->
-        <param name="horizontal_displacement_multiplier" value="0.5"/>
-<!--Множитель для относительного смещения объекта от минимального положения по горизонтали (линейная скорость)-->
-        <param name="vertical_displacement_multiplier" value="0.3333335"/>
-<!--Минимальное положение по вертикали ("желаемая" позиция куба по Y) (в % от высоты изображения)-->
-        <param name="vertical_desired_pos_rel" value="0.98"/>
+
+<!-- То есть два кадра подряд надо найти объект рядом чтобы писать сообщениe -->
+        <param name="minimalTrajectoryLen" value="2"/>
+
+<!--Минимально допустимое смещение (pixels) при котором сопровождение считается потерянным -->
+        <param name="pixel_displacement_allowed" value="20"/>
+<!-- Maximal allowed metric cube displacement between detections -->
+        <param name="metric_displacement_allowed" value="0.08"/>
+
+<!-- Минмальное положение по вертикали ("желаемая" позиция куба по Y) -->
+        <param name="horizontal_divertical_desired_pos_relsplacement_multiplier" value="0.98"/>
+<!-- Ho much time we should move to earlier detected object until say we lost it -->
+        <param name="maximum_lost_frames" value="500"/>
+<!-- Relative to image width, width of corridor where cube must be lost to be gathered-->
+        <param name="gathering_area_relative_width" value="0.2"/>
+
+<!-- Способ управления роботом: 1 - по MoveBase/Goal, 2 - по координатам куба своими силами-->
+        <param name="followMode" value="1"/>
     </node>
 </launch>

@@ -1,3 +1,4 @@
+// SYSTEM  
 #include <iostream>
 #include <fstream>
 #include <cstring>
@@ -5,7 +6,15 @@
 #include <mutex>
 #include <list>
 #include <map>
-
+/////////////////////////////////////////////////////////////////////////
+// OPENCV
+#include <opencv2/core/utility.hpp>
+#include <opencv2/tracking.hpp>
+#include <opencv2/videoio.hpp>
+#include <opencv2/highgui.hpp>
+#include "opencv2/calib3d/calib3d.hpp"
+/////////////////////////////////////////////////////////////////////////
+// ROS  
 #include <ros/ros.h>
 #include "ros/package.h"
 #include <cv_bridge/cv_bridge.h>
@@ -13,52 +22,23 @@
 #include "std_msgs/String.h"
 #include "nav_msgs/Odometry.h"
 #include <tf/transform_datatypes.h>
-
-//#include <sensor_msgs/PointCloud2.h>
-//#include <sensor_msgs/point_cloud2_iterator.h>
 #include <visualization_msgs/Marker.h>
 #include <visualization_msgs/MarkerArray.h>
-//#include "pcl_ros/point_cloud.h"
-//#include <pcl/io/pcd_io.h>
-//#include <pcl/point_types.h>
-//#include <pcl/filters/statistical_outlier_removal.h>
-//#include <pcl_conversions/pcl_conversions.h>
-
 #include <move_base_msgs/MoveBaseActionGoal.h>
-
-//#include <sensor_msgs/Image.h>
-
 #include "object_detection_msgs/DetectorResult.h"
-
-#include <opencv2/core/utility.hpp>
-#include <opencv2/tracking.hpp>
-#include <opencv2/videoio.hpp>
-#include <opencv2/highgui.hpp>
-#include "opencv2/calib3d/calib3d.hpp"
-//#include <opencv2/tracking.hpp>
-//#include <opencv2/core/ocl.hpp>
-
-
-
-
-
 /////////////////////////////////////////////////////////////////////////
-//TODO: Вынести параметры в rosparam
-//TODO: Задание параметров из лаунч-файла
+// _____                               _                
+//|  __ \                             | |               
+//| |__) |_ _ _ __ __ _ _ __ ___   ___| |_ ___ _ __ ___ 
+//|  ___/ _` | '__/ _` | '_ ` _ \ / _ \ __/ _ \ '__/ __|
+//| |  | (_| | | | (_| | | | | | |  __/ ||  __/ |  \__ \
+//|_|   \__,_|_|  \__,_|_| |_| |_|\___|\__\___|_|  |___/
+/////////////////////////////////////////////////////////////////////////
+//Начальная фильтрация
 //Процент высоты картинки выше которого мы объекты не рассматриваем как кубы
 float min_y_position = 0.6f;
 //Минимальная уверенность детектора ниже которой объекты не рассматриваются
 float minimal_conf = 0.7f;
-//Минимальная уверенность трекера котрую пока не посчитать :(
-//const float tracker_min_conf = 0.3f;
-//Максимально допустимое изменение размера куба при сопровождении между кадрами
-//abs(old_w-new_w)/old_w<... and abs(old_h-new_h)/old_h<...
-float maximal_cube_size_change_allowed = 0.05f;
-//Минимально допустимое смещение (pixels) при котором сопровождение считается потерянным
-int pixel_displacement_allowed = 20;
-int minimalTrajectoryLen = 2; //То есть два кадра подряд надо найти объект рядом чтобы писать сообщения
-float metric_displacement_allowed = 0.08;//Can be mistaken for 20
-bool useTracker = false;
 /////////////////////////////////////////////////////////////////////////
 //Максимальная угловая скорость платформы, ограничение в целях безопасности
 float max_angular_speed = 0.5f;
@@ -66,30 +46,36 @@ float min_angular_speed = 0.05f;
 //Максимальная линейная скорость платформы, ограничение в целях безопасности
 float max_linear_speed = 0.8f;
 float min_linear_speed = 0.05f;
-
-
+/////////////////////////////////////////////////////////////////////////
 //TRACKING PARAMETERS
+//То есть два кадра подряд надо найти объект рядом чтобы писать сообщения
+int minimalTrajectoryLen = 2; 
 //How to determine that curren cube is the same as last time?
-//Multiplier to determine how much we can be moved from current position in % of prev size
-float new_cube_percent_displacement = 1.5;
-// HOw much frames in the row we should detect cube in near positionn to decide it is confident?
-float allowed_trajectory_length = 2;
-
-//Множитель для относительного смещения объекта от центра изображения по вертикали (угловая скорость)
-float horizontal_displacement_multiplier = 0.5;
-//Множитель для относительного смещения объекта от минимального положения по горизонтали (линейная скорость)
-float vertical_displacement_multiplier = 1.0/3.0;
+//Минимально допустимое смещение (pixels) при котором сопровождение считается потерянным
+int pixel_displacement_allowed = 20;
+// Maximal allowed metric cube displacement between detections
+float metric_displacement_allowed = 0.08;
+bool useTracker = false;
+const int followModeMoveBaseGoal = 1;
+const int followModeControlByCoord = 2;
+int followMode = followModeMoveBaseGoal;
+/////////////////////////////////////////////////////////////////////////
+//FOLLOW PARAMETERS
 //Минмальное положение по вертикали ("желаемая" позиция куба по Y)
 float vertical_desired_pos_rel = 0.98;
 //Ho much time we should move to earlier detected object until say we lost it
-//!!DesiredObject remain in old position, where earlier it was confidently deteted
 int maximum_lost_frames = 500;
+//Relative to image width, width of corridor where cube must be lost to be gathered
+float gathering_area_relative_width = 0.2;
 /////////////////////////////////////////////////////////////////////////
-void initParams(ros::NodeHandle* nh_p);
-void readParams(ros::NodeHandle* nh_p);
+// ______                _   _                 
+//|  ____|              | | (_)                
+//| |__ _   _ _ __   ___| |_ _  ___  _ __  ___ 
+//|  __| | | | '_ \ / __| __| |/ _ \| '_ \/ __|
+//| |  | |_| | | | | (__| |_| | (_) | | | \__ \
+//|_|   \__,_|_| |_|\___|\__|_|\___/|_| |_|___/
 /////////////////////////////////////////////////////////////////////////
-//Служебная функция для расчета положения куба в пространстве
-void calcBoxPosition(double u, double v, double mod, double &X, double&Z, double &angle);
+//CALLBACKS
 //Коллбэк на прием картинок
 void imageCallback(const sensor_msgs::CompressedImageConstPtr& msg);
 //Коллбэк на прием рамок кубов
@@ -98,14 +84,29 @@ void detectorCallback(const object_detection_msgs::DetectorResultConstPtr& msg);
 void OdomCallback(const nav_msgs::Odometry::ConstPtr& msg);
 //Прием данных командного топика
 void CommandCallback(const std_msgs::String::ConstPtr& msg);
-
+/////////////////////////////////////////////////////////////////////////
+//FUNCTIONS
+void initParams(ros::NodeHandle* nh_p);
+void readParams(ros::NodeHandle* nh_p);
+//Служебная функция для расчета положения куба в пространстве
+void calcBoxPosition(double u, double v, double mod, double &X, double&Z, double &angle);
+//
+visualization_msgs::Marker GenerateMarker( int secs, int nsecs, int id, double x, double y, double scale, float r, float g, float b, float a);
+/////////////////////////////////////////////////////////////////////////
+// _____        _        
+//|  __ \      | |       
+//| |  | | __ _| |_ __ _ 
+//| |  | |/ _` | __/ _` |
+//| |__| | (_| | || (_| |
+//|_____/ \__,_|\__\__,_|                     
+/////////////////////////////////////////////////////////////////////////
 //Текущее изображение для получения из коллбэка через мьютекс
 cv::Mat currentImage;
 std::mutex imageMutex;
 //Время получения картинки (по времени ПК робота!)
 int img_sec;
 int img_nsec;
-
+/////////////////////////////////////////////////////////////////////////
 //Данные детектирования и мьютекс доступа к ним
 std::mutex detectionDataMutex;
 std::vector<std::vector<float> > receivedRects;
@@ -119,47 +120,22 @@ int det_sec;
 int det_nsec;
 //Переменные для определения изменений в разнице по времени между
 //временем кадра и детектора
-float delta_img_det=0.0f;
-float delta_img_det_prev=0.0f;
-
+//float delta_img_det=0.0f;
+//float delta_img_det_prev=0.0f;
+/////////////////////////////////////////////////////////////////////////
 //ODOMETRY
 std::mutex odometryDataMutex;
 float odometryX = 0.0f;
 float odometryY = 0.0f;
 float odometryYaw = 0.0f;
 double odometryTimeStamp=0.0;
-
-//Служебные РОСовские представители узла
-ros::NodeHandle* nh;
-ros::NodeHandle* nh_p;
-
-//Тип трекера
-//Хорошие - неплохо 1, кое-как 2, оч хорошо 4 и ужасно остальные
-std::string trackerTypes[8] = {"BOOSTING", "MIL", "KCF", "TLD","MEDIANFLOW", "GOTURN", "MOSSE"};
-std::string trackerType = trackerTypes[4];
-
-//Указатель на трекер OpenCV
-cv::Ptr<cv::Tracker> tracker;
-//Уверенность (заготовка уверенности) которой хз где взять
-//float trackerConfidence = 0.0f;
-//Текущая рамка и с прошлого кадра, используются для детекции резких срывов сопровождения
-//cv::Rect2d tracker_bbox(0, 0, 0, 0);
-//cv::Rect2d tracker_bbox_prev(0,0,0,0);
-
+/////////////////////////////////////////////////////////////////////////
+//TRACKING AND FOLLOW
 std::vector<double> previousDesiredObjectPosition;
 std::vector<double> currentDesiredObjectPosition;
 int desiredObjectTrajectoryLength=0;
-
-//Флаг работы трекера, если сброшен в случае срыва или еще чего, трекер будет удален, затем создан и проинициализирован вновь
-//bool trackerInitialized = false;
-
-// Переменная состояния для куба - обнаружен / необнаружен
-//bool tracking_ok = false;
-//bool tracker_ok_old = false;
-
-//bool objectFound = false;
-
-//STATES HERE
+/////////////////////////////////////////////////////////////////////////
+//STATE MACHINE
 //Search for cubes and send the message as confident cube found
 const int STATE_SEARCH = 0;
 //Here we follow the cube using its pixel or metric coords, if cube is lost or no detection we still move to coords and hope to find new one in almost same place
@@ -168,79 +144,72 @@ const int FOLLOW_CUBE = 1;
 const int GATHER_LOST_CUBE = 2;
 std::mutex currentStateMutex;
 int current_state = 0;
-
+/////////////////////////////////////////////////////////////////////////
+//Служебные РОСовские представители узла
+ros::NodeHandle* nh;
+ros::NodeHandle* nh_p;
+/////////////////////////////////////////////////////////////////////////
+// __  __       _       
+//|  \/  |     (_)      
+//| \  / | __ _ _ _ __  
+//| |\/| |/ _` | | '_ \ 
+//| |  | | (_| | | | | |
+//|_|  |_|\__,_|_|_| |_|
+/////////////////////////////////////////////////////////////////////////
 int main( int argc, char** argv )
 {
-    std_msgs::String msg;// = std_msgs::String();
-    msg.data = "test";
-    //Инициализация узла
-    ros::init(argc, argv, "samsung_stz_main");
-    ros::start();
-    //Создать службу управления нодой
-    nh = new ros::NodeHandle();
-    nh_p = new ros::NodeHandle("~");
-
-    ROS_INFO("Ros started!");
-
-    // Сообщения для командного топика
-    std_msgs::String msg_box_detected = std_msgs::String();
-    std_msgs::String msg_box_taken = std_msgs::String();
-    std_msgs::String msg_box_not_taken = std_msgs::String();
-    msg_box_detected.data = std::string("GATHER_CUBE");
-    msg_box_taken.data = std::string("GUBE_TAKEN");
-    msg_box_not_taken.data = std::string("CUBE_NOT_TAKEN");
-    // Предыдущее состояние параметра
-    int navigate_via_bbox = 0;
-    int navigate_via_bbox_prev = 0;
-    //Создать паблишеров и сабскрайберов
-    ros::Subscriber sub = nh->subscribe("/usb_cam_front/image_raw/compressed", 1, imageCallback);
-    ros::Subscriber sub_detector_res = nh->subscribe("/samsung/BBoxes", 1, detectorCallback);
-    ros::Publisher twistPublisher = nh->advertise<geometry_msgs::Twist>("/state_machine/cmd_vel", 100);
-    ros::Publisher commandPublisher = nh->advertise<std_msgs::String>("/kursant_driver/command", 100);
-    ros::Publisher cubesPublisher = nh->advertise<visualization_msgs::MarkerArray>("/samsung/cube_positions", 20);
-    ros::Publisher moveBaseGoalPublisher = nh->advertise<move_base_msgs::MoveBaseActionGoal>("/move_base/goal", 20);
-
-    nh->setParam("/samsung_stz_main/move", 0);
-
-    //nh->setParam("/samsung/navigate_via_bbox", 0);
-
-    //Может быть полезно если решим что-то сохранять в файлы или загружать
-    //std::string package_path = ros::package::getPath("tld_tracker_sams")+std::string("/lib/");
-    //if(!package_path.empty())
-    //  std::cout<<"Package path: "<<package_path.c_str()<<"\n";
-
-    //Создать окно отображения информации об объектах и сопровождении
-    cv::namedWindow("view");
-    cv::startWindowThread();
-
-    //Создать трекер TODO: Перетащить в отдельную функцию
-    /*
-    if (trackerType == "BOOSTING")
-        tracker = cv::TrackerBoosting::create();
-    if (trackerType == "MIL")
-        tracker = cv::TrackerMIL::create();
-    if (trackerType == "KCF")
-        tracker = cv::TrackerKCF::create();
-    if (trackerType == "TLD")
-        tracker = cv::TrackerTLD::create();
-    if (trackerType == "MEDIANFLOW")
-        tracker = cv::TrackerMedianFlow::create();
-    if (trackerType == "GOTURN")
-        tracker = cv::TrackerGOTURN::create();
-    if (trackerType == "MOSSE")
-        tracker = cv::TrackerMOSSE::create();*/
-
+  //Инициализация узла
+  ros::init(argc, argv, "samsung_stz_main");
+  ros::start();
+  ROS_INFO("Ros started!");
+  //Создать службу управления нодой
+  nh = new ros::NodeHandle();
+  nh_p = new ros::NodeHandle("~");
+  // Сообщения для командного топика
+  std_msgs::String msg_box_detected = std_msgs::String();
+  std_msgs::String msg_box_taken = std_msgs::String();
+  std_msgs::String msg_box_not_taken = std_msgs::String();
+  msg_box_detected.data = std::string("GATHER_CUBE");
+  msg_box_taken.data = std::string("GUBE_TAKEN");
+  msg_box_not_taken.data = std::string("CUBE_NOT_TAKEN");
+  //Создать паблишеров и сабскрайберов
+  ros::Subscriber sub_image = nh->subscribe("/usb_cam_front/image_raw/compressed", 1, imageCallback);
+  ros::Subscriber sub_detector_res = nh->subscribe("/samsung/BBoxes", 1, detectorCallback);
+  ros::Subscriber sub_odom = nh->subscribe("/kursant_driver/odom", 1, OdomCallback);
+  ros::Publisher twistPublisher = nh->advertise<geometry_msgs::Twist>("/state_machine/cmd_vel", 100);
+  ros::Publisher commandPublisher = nh->advertise<std_msgs::String>("/kursant_driver/command", 100);
+  ros::Publisher cubesPublisher = nh->advertise<visualization_msgs::MarkerArray>("/samsung/cube_positions", 20);
+  ros::Publisher moveBaseGoalPublisher = nh->advertise<move_base_msgs::MoveBaseActionGoal>("/move_base/goal", 20);
+  //Служебный параметр для отключения отправки движения/цели при отладке
+  nh->setParam("/samsung_stz_main/move", 0);
+  //Может быть полезно если решим что-то сохранять в файлы или загружать
+  //std::string package_path = ros::package::getPath("tld_tracker_sams")+std::string("/lib/");
+  //if(!package_path.empty())
+  //  std::cout<<"Package path: "<<package_path.c_str()<<"\n";
+  //Создать окно отображения информации об объектах и сопровождении
+  cv::namedWindow("view");
+  cv::startWindowThread();
+  //Протинциализировать параметры из xml-launch файла
   initParams(nh_p);
-
+  //Flag, if object we detected is confident (tracked successfully for more than minimalTrajectoryLen)
   bool detectedConfidentObject=false;
-  bool desired_object_lost = false;
+  //Flag, if there exists confident object that can be used for initialization
   bool new_object_found = false;
 
+/////////////////////////////////////////////////////////////////////////////////////
+//   _____           _      
+//  / ____|         | |     
+// | |    _   _  ___| | ___ 
+// | |   | | | |/ __| |/ _ \
+// | |___| |_| | (__| |  __/
+//  \_____\__, |\___|_|\___|
+//         __/ |            
+//        |___/             
+/////////////////////////////////////////////////////////////////////////////////////
   while(ros::ok())
   {
     //Считать параметры на случай если они изменились
     readParams(nh_p);
-
     //Получить блокировку, извлечь текущую картинку для отображения
     //Получить также таймстамп картинки для сравнения с таймстампами детектора
     cv::Mat debug_img, tracking_img;
@@ -250,18 +219,18 @@ int main( int argc, char** argv )
     int img_secs = img_sec;
     int img_nsecs=img_nsec;
     image_tstamp = (double)img_sec + (double)img_nsec/1000000000;
-
     imageMutex.unlock();
+    ///////////////////////////////
     //Без картинки все остальное - бессмысленно
     if(!debug_img.data)
     {
         ros::spinOnce();
         continue;
     }
-
     //Отдельная копия - для отладочного отображения
     tracking_img = debug_img.clone();
-
+    double calib_mod = 800.0/static_cast<double>(debug_img.cols);
+    ///////////////////////////////
     //Получить блокировку, забрать данные о детекциях, очистить, чтобы старые
     //квадраты не ползали по экрану стоя на месте
     double detector_tstamp=0;
@@ -279,30 +248,24 @@ int main( int argc, char** argv )
     det_yaw = detectionRobotYaw;
     detectionDataMutex.unlock();
     bool detection_received = detections.size()>0;
-
+    //Расчет разницы по времени между детекцией и текущим кадром
+    //delta_img_det = image_tstamp - detector_tstamp;
+    ///////////////////////////////
     //!Отладочная инфа рисуется всегда
     //Исходя из заданных в параметрах отосительных координат рассчитать положение "линии горизонта" и
     //"целевой" линии куда мы ведем низ куба
     int minimal_y = int(min_y_position*debug_img.rows);
     //std::cout<<"Myp="<<min_y_position<<" my="<<minimal_y<<" rows="<<debug_img.rows<<"\n";
     int desired_y = int(vertical_desired_pos_rel*debug_img.rows);
-    int desired_x = debug_img.cols/2;
+    //int desired_x = debug_img.cols/2;
+    int desired_area_left = (int)((float)(debug_img.cols)/2 - gathering_area_relative_width*(float)(debug_img.cols));
+    int desired_area_right = (int)((float)(debug_img.cols)/2 + gathering_area_relative_width*(float)(debug_img.cols));
     //Отрисовать отладочные линии - "цель" по вертикали, горизонтали
     cv::line(debug_img, cv::Point2f(0, minimal_y), cv::Point2f(debug_img.cols-1, minimal_y), cv::Scalar(150,0,0), 1);
     cv::line(debug_img, cv::Point2f(0, desired_y), cv::Point2f(debug_img.cols-1, desired_y), cv::Scalar(0,150,0), 1);
-    cv::line(debug_img, cv::Point2f(desired_x, 0), cv::Point2f(desired_x, debug_img.rows-1), cv::Scalar(0,150,0), 1);
-
-    //Расчет разницы по времени между детекцией и текущим кадром
-    delta_img_det = image_tstamp - detector_tstamp;
-
-    bool fresh_detections = false;
-    //std::cout<<delta_img_det<<" "<<delta_img_det_prev<<"\n";
-    ///if (delta_img_det<=delta_img_det_prev)
-    //{
-    //    fresh_detections = true;
-    //}
-
-    double mod = 800.0/static_cast<double>(debug_img.cols);
+    //cv::line(debug_img, cv::Point2f(desired_x, 0), cv::Point2f(desired_x, debug_img.rows-1), cv::Scalar(0,150,0), 1);
+    cv::line(debug_img, cv::Point2f(desired_area_left, 0), cv::Point2f(desired_area_left, debug_img.rows-1), cv::Scalar(0,150,0), 1);
+    cv::line(debug_img, cv::Point2f(desired_area_right, 0), cv::Point2f(desired_area_right, debug_img.rows-1), cv::Scalar(0,150,0), 1);
 
     visualization_msgs::MarkerArray cubes;
     std::vector<double> desired_rect;
@@ -310,10 +273,8 @@ int main( int argc, char** argv )
     {
         //Расчет пространственных координат куба для каждого прямоугольника
         //Опубликовать расчетные позы кубов
-
-
-
         std::vector<std::vector<float> > coords;
+        std::vector<std::vector<double> > current_detections;
         for(int i=0; i<detections.size(); i++)
         {
             double X1,Z1,angle1, X2, Z2, angle2;
@@ -323,53 +284,41 @@ int main( int argc, char** argv )
             float ymax = detections[i][3];
             float conf = detections[i][4];
 
+  
+            if(ymin>minimal_y && conf>minimal_conf)
+            {
+              std::vector<double> det;
+              det.resize(7);
+              calcBoxPosition(xmin, ymax, calib_mod, X1, Z1, angle1);
+              calcBoxPosition(xmax, ymax, calib_mod, X2, Z2, angle2);
 
-            calcBoxPosition(xmin, ymax, mod, X1, Z1, angle1);
-            calcBoxPosition(xmax, ymax, mod, X2, Z2, angle2);
-
-            //Дополнительно - усреднить между правым нижним и левым нижним
-            double X = (X1+X2)/2;
-            double Z = (Z1+Z2)/2;
-            double A = (angle1+angle2)/2;
-            std::vector<float> r;
-            r.resize(5, 0.0f);
-            r[0] = X;
-            r[1] = Z;
-            r[2] = A;
-
-            //double X = coords[i][0];
-            //   double Z = coords[i][1];
-
-            //std::cout<<"det_x="<<det_x<<" det_y="<<det_y<<"
-            double map_x = det_x + (Z+0.20)*cos(det_yaw) + X*sin(det_yaw);
-            double map_y = det_y + (Z+0.20)*sin(det_yaw) - X*cos(det_yaw);
-            r[3] = map_x;
-            r[4] = map_y;
-            coords.push_back(r);
-            //calculate map positions
-            /*pcl::PointXYZRGB pt;
-            pt.x = map_x;
-            pt.y = map_y;
-            pt.z = 0;
-            pt.r = 150;
-            pt.g = 150;
-            pt.b = 150;
-            cloud->push_back(pt);*/
+              //Дополнительно - усреднить между правым нижним и левым нижним
+              double X = (X1+X2)/2;
+              double Z = (Z1+Z2)/2;
+              double A = (angle1+angle2)/2;
+              std::vector<float> r;
+              r.resize(5, 0.0f);
+              //r[0] = X;
+              //r[1] = Z;
+              //r[2] = A;
+              double map_x = det_x + (Z+0.20)*cos(det_yaw) + X*sin(det_yaw);
+              double map_y = det_y + (Z+0.20)*sin(det_yaw) - X*cos(det_yaw);
+              //r[3] = map_x;
+              //r[4] = map_y;
+              
+              det[0] = xmin;
+              det[1] = ymin;
+              det[2] = xmax;
+              det[3] = ymax;
+              det[4] = map_x;
+              det[5] = map_y;
+              det[6] = A;
+              current_detections.push_back(det);
+            }
         }
-
-        
-
-
         //Выбор того, к которому будем ехать
-        //Просто выбираем из обнаруженных самый подходящий
-        //Если сопровождение окей, то ничего не произойдет, а если не окей то произойдетъ
-        //повторная инициализация ближайшим кубиком
-        //std::vector<std::vector<float> > good_cubes;
-        //std::vector<float> desired_rect;
-        //We know nothing about where we are now
         currentDesiredObjectPosition.clear();
         float low_y=0.0f;
-
         //We had previous object, look if any detection is near
         bool prev_obj=false;
         float prev_u=0, prev_v=0, prev_x=0, prev_y=0;
@@ -380,126 +329,70 @@ int main( int argc, char** argv )
             prev_v = (previousDesiredObjectPosition[1]+previousDesiredObjectPosition[3])/2;
             prev_x = previousDesiredObjectPosition[4];
             prev_y = previousDesiredObjectPosition[5];
-            //prev_==previousDesiredObjectPosition[1]
         }
 
-        for(int i=0; i<detections.size(); i++)
+        for(int i=0; i<current_detections.size(); i++)
         {
-            float xmin = detections[i][0];
-            float ymin = detections[i][1];
-            float xmax = detections[i][2];
-            float ymax = detections[i][3];
-            float conf = detections[i][4];
+            float xmin = current_detections[i][0];
+            float ymin = current_detections[i][1];
+            float xmax = current_detections[i][2];
+            float ymax = current_detections[i][3];
 
             float curr_u = (xmin+xmax)/2;
             float curr_v = (ymin+ymax)/2;
-            float curr_a = coords[i][2];
-            float curr_x = coords[i][3];
-            float curr_y = coords[i][4];
+            float curr_x = current_detections[i][4];
+            float curr_y = current_detections[i][5];
+            float curr_a = current_detections[i][6];
+            
+            cv::rectangle(debug_img, cv::Point2f(xmin, ymin), cv::Point2f(xmax, ymax), cv::Scalar(255,0,0), 2);
+            std::stringstream ss;
+            ss.setf(std::ios::fixed);
+            ss.precision(2);
+            ss<<"X="<<coords[i][0]<<" Y="<<coords[i][1];
+            //Тут печатаем на картинке пространственные координаты
+            cv::putText(debug_img, ss.str(), cvPoint(xmin,ymin-10),
+                cv::FONT_HERSHEY_COMPLEX_SMALL, 0.8, cvScalar(200,200,250), 1, CV_AA);
+  
+            visualization_msgs::Marker cb = GenerateMarker( img_secs, img_nsecs, detections.size()+1, curr_x, curr_y, 0.1,204.0/255.0,168.0/255,45.0/255.0, 1.0);
+            cubes.markers.push_back(cb);
 
-            if(ymin>minimal_y && conf>minimal_conf)
+
+            if(prev_obj && currentDesiredObjectPosition.empty())
             {
-                //good_cubes.push_back(detections[i]);
-                cv::rectangle(debug_img, cv::Point2f(xmin, ymin), cv::Point2f(xmax, ymax), cv::Scalar(255,0,0), 2);
-                std::stringstream ss;
-                ss.setf(std::ios::fixed);
-                ss.precision(2);
-                ss<<"X="<<coords[i][0]<<" Y="<<coords[i][1];
-                //Тут печатаем на картинке пространственные координаты
-                cv::putText(debug_img, ss.str(), cvPoint(xmin,ymin-10),
-                    cv::FONT_HERSHEY_COMPLEX_SMALL, 0.8, cvScalar(200,200,250), 1, CV_AA);
-                    
-                
-                
-                
-                visualization_msgs::Marker cb;
-                cb.header.frame_id = "odom";
-                cb.header.stamp.sec = img_secs;
-                cb.header.stamp.nsec = img_nsecs;
-                cb.ns = "cube";
-                cb.id = i;
-                cb.type = 1;//CUBE
-                cb.pose.position.x = curr_x;
-                cb.pose.position.y = curr_y;
-                cb.scale.x = 0.1;
-                cb.scale.y = 0.1;
-                cb.scale.z = 0.1;
-                cb.color.r = 0.5;
-                cb.color.g = 0.0;
-                cb.color.b = 0.1;
-                cb.color.a = 1.0;
-                cubes.markers.push_back(cb);
-
-
-                if(prev_obj)
+                double du = fabs(curr_u-prev_u);
+                double dv = fabs(curr_v-prev_v);
+                double dx = fabs(curr_x-prev_x);
+                double dy = fabs(curr_y-prev_y);
+                //std::cout<<"du = "<<du<<" dv = "<<dv<<" dx = "<<dx<<" dy = "<<dy<<"\n";
+                if((fabs(curr_u-prev_u)<=pixel_displacement_allowed &&
+                    fabs(curr_v-prev_v)<=pixel_displacement_allowed) ||
+                    (fabs(curr_x-prev_x)<=metric_displacement_allowed &&
+                    fabs(curr_y-prev_y)<=metric_displacement_allowed))
                 {
-                    double du = fabs(curr_u-prev_u);
-                    double dv = fabs(curr_v-prev_v);
-                    double dx = fabs(curr_x-prev_x);
-                    double dy = fabs(curr_y-prev_y);
-                    //std::cout<<"du = "<<du<<" dv = "<<dv<<" dx = "<<dx<<" dy = "<<dy<<"\n";
-                    if((fabs(curr_u-prev_u)<=pixel_displacement_allowed &&
-                        fabs(curr_v-prev_v)<=pixel_displacement_allowed) ||
-                        (fabs(curr_x-prev_x)<=metric_displacement_allowed &&
-                        fabs(curr_y-prev_y)<=metric_displacement_allowed))
-                    {
-                        std::cout<<"Tracked suceccfully!\n";
-                        currentDesiredObjectPosition.resize(7);
-                        currentDesiredObjectPosition[0] = xmin;
-                        currentDesiredObjectPosition[1] = ymin;
-                        currentDesiredObjectPosition[2] = xmax;
-                        currentDesiredObjectPosition[3] = ymax;
-                        currentDesiredObjectPosition[4] = curr_x;
-                        currentDesiredObjectPosition[5] = curr_y;
-                        currentDesiredObjectPosition[6] = curr_a;
-                        desiredObjectTrajectoryLength+=1;
-                        break;
-                    }
+                    std::cout<<"Tracked suceccfully!\n";
+                    currentDesiredObjectPosition =  current_detections[i];
+                    desiredObjectTrajectoryLength+=1;
+                    continue;
                 }
-
-                if(ymax>low_y)
-                {
-                    desired_rect.resize(7, 0.0f);
-                    desired_rect.resize(7);
-                    desired_rect[0] = xmin;
-                    desired_rect[1] = ymin;
-                    desired_rect[2] = xmax;
-                    desired_rect[3] = ymax;
-                    desired_rect[4] = curr_x;
-                    desired_rect[5] = curr_y;
-                    desired_rect[6] = curr_a;
-                }
-                //Here we choose the best detection
-                /*if(ymax>low_y)
-                {
-                    low_y = ymax;
-                    desired_rect.resize(4, 0.0f);
-                    desired_rect[0] = xmin+1;
-                    desired_rect[1] = ymin+1;
-                    desired_rect[2] = xmax-1;
-                    desired_rect[3] = ymax-1;
-                }*/
             }
+
+            if(ymax>low_y)
+            {
+                desired_rect =  current_detections[i];
+            }  
         }
 
         //Now we check if we
         if((currentDesiredObjectPosition.size()>0) && (desiredObjectTrajectoryLength>minimalTrajectoryLen))
         {
-            //We gonna use this flag to send message that object found
-            
+            //We gonna use this flag to send message that object foud
             detectedConfidentObject=true;
         }
         else
         {
             detectedConfidentObject=false;
         }
-
-        //We lost desired object, this flag will be used by states later
-        desired_object_lost = currentDesiredObjectPosition.size()==0;
-
-       
-
-        //
+        //Set if we found at least one good confident object
         new_object_found = desired_rect.size()>0;
     }
    
@@ -546,22 +439,7 @@ int main( int argc, char** argv )
                   currentStateMutex.lock();
                   current_state = FOLLOW_CUBE;
                   currentStateMutex.unlock();
-                  visualization_msgs::Marker cb;
-                  cb.header.frame_id = "odom";
-                  cb.header.stamp.sec = img_secs;
-                  cb.header.stamp.nsec = img_nsecs;
-                  cb.ns = "cube";
-                  cb.id = detections.size()+1;
-                  cb.type = 1;//CUBE
-                  cb.pose.position.x = currentDesiredObjectPosition[4];
-                  cb.pose.position.y = currentDesiredObjectPosition[5];
-                  cb.scale.x = 0.11;
-                  cb.scale.y = 0.11;
-                  cb.scale.z = 0.11;
-                  cb.color.r = 1.0;
-                  cb.color.g = 1.0;
-                  cb.color.b = 1.0;
-                  cb.color.a = 0.9;
+                  visualization_msgs::Marker cb = GenerateMarker(img_secs,img_nsecs, detections.size()+1, previousDesiredObjectPosition[4], previousDesiredObjectPosition[5], 0.11, 1.0, 1.0, 1.0, 0.9);
                   cubes.markers.push_back(cb);
               }
               else
@@ -571,24 +449,9 @@ int main( int argc, char** argv )
                 {
                     state_line<<"Update object ";
                     previousDesiredObjectPosition = currentDesiredObjectPosition;
-                    cv::rectangle(debug_img, cv::Point2f(currentDesiredObjectPosition[0], currentDesiredObjectPosition[1]), cv::Point2f(currentDesiredObjectPosition[2],currentDesiredObjectPosition[3]), cv::Scalar(255,255,255), 2);
-                                      visualization_msgs::Marker cb;
-                    lost_counter=0;
-                    cb.header.frame_id = "odom";
-                    cb.header.stamp.sec = img_secs;
-                    cb.header.stamp.nsec = img_nsecs;
-                    cb.ns = "cube";
-                    cb.id = detections.size()+1;
-                    cb.type = 1;//CUBE
-                    cb.pose.position.x = currentDesiredObjectPosition[4];
-                    cb.pose.position.y = currentDesiredObjectPosition[5];
-                    cb.scale.x = 0.11;
-                    cb.scale.y = 0.11;
-                    cb.scale.z = 0.11;
-                    cb.color.r = 0.5;
-                    cb.color.g = 1.0;
-                    cb.color.b = 1.0;
-                    cb.color.a = 0.9;
+                    cv::rectangle(debug_img, cv::Point2f(currentDesiredObjectPosition[0], currentDesiredObjectPosition[1]), 
+                                  cv::Point2f(currentDesiredObjectPosition[2],currentDesiredObjectPosition[3]), cv::Scalar(255,255,255), 2);
+                    visualization_msgs::Marker cb = GenerateMarker(img_secs,img_nsecs,detections.size()+1, previousDesiredObjectPosition[4], previousDesiredObjectPosition[5], 0.11, 0.5, 1.0, 1.0, 0.9);
                     cubes.markers.push_back(cb);
                 }
                 else
@@ -598,23 +461,7 @@ int main( int argc, char** argv )
                       state_line<<"Reset object ";
                       previousDesiredObjectPosition = desired_rect;
                       desiredObjectTrajectoryLength = 1;
-                      visualization_msgs::Marker cb;
-                      cb.header.frame_id = "odom";
-                      cb.header.stamp.sec = img_secs;
-                      cb.header.stamp.nsec = img_nsecs;
-                      lost_counter=0;
-                      cb.ns = "cube";
-                      cb.id = detections.size()+1;
-                      cb.type = 1;//CUBE
-                      cb.pose.position.x = previousDesiredObjectPosition[4];
-                      cb.pose.position.y = previousDesiredObjectPosition[5];
-                      cb.scale.x = 0.11;
-                      cb.scale.y = 0.11;
-                      cb.scale.z = 0.11;
-                      cb.color.r = 1.0;
-                      cb.color.g = 1.0;
-                      cb.color.b = 1.0;
-                      cb.color.a = 0.9;
+                      visualization_msgs::Marker cb = GenerateMarker(img_secs, img_nsecs, detections.size()+1,previousDesiredObjectPosition[4],previousDesiredObjectPosition[5],0.11, 1.0,1.0,1.0, 0.9);
                       cubes.markers.push_back(cb);
                     }
                     else //We lost an object and have no new one, as we do not move to it, drop it
@@ -648,22 +495,7 @@ int main( int argc, char** argv )
           cv::rectangle(debug_img, cv::Point2f(currentDesiredObjectPosition[0], currentDesiredObjectPosition[1]), 
                         cv::Point2f(currentDesiredObjectPosition[2],currentDesiredObjectPosition[3]), cv::Scalar(0,255,0), 2);
           last_color = cv::Scalar(0,255,0);
-          visualization_msgs::Marker cb;
-          cb.header.frame_id = "odom";
-          cb.header.stamp.sec = img_secs;
-          cb.header.stamp.nsec = img_nsecs;
-          cb.ns = "cube";
-          cb.id = detections.size()+1;
-          cb.type = 1;//CUBE
-          cb.pose.position.x = previousDesiredObjectPosition[4];
-          cb.pose.position.y = previousDesiredObjectPosition[5];
-          cb.scale.x = 0.11;
-          cb.scale.y = 0.11;
-          cb.scale.z = 0.11;
-          cb.color.r = 0.0;
-          cb.color.g = 1.0;
-          cb.color.b = 0.0;
-          cb.color.a = 0.9;
+          visualization_msgs::Marker cb = GenerateMarker( img_secs, img_nsecs, detections.size()+1, previousDesiredObjectPosition[4], previousDesiredObjectPosition[5], 0.11, 0.0, 1.0, 0.0, 0.9);
           cubes.markers.push_back(cb);
           lost_counter=0;
         }
@@ -678,22 +510,7 @@ int main( int argc, char** argv )
             cv::rectangle(debug_img, cv::Point2f(currentDesiredObjectPosition[0], currentDesiredObjectPosition[1]), 
                         cv::Point2f(currentDesiredObjectPosition[2],currentDesiredObjectPosition[3]), cv::Scalar(0,255,0), 2);
             last_color = cv::Scalar(0,255,0);
-            visualization_msgs::Marker cb;
-            cb.header.frame_id = "odom";
-            cb.header.stamp.sec = img_secs;
-            cb.header.stamp.nsec = img_nsecs;
-            cb.ns = "cube";
-            cb.id = detections.size()+1;
-            cb.type = 1;//CUBE
-            cb.pose.position.x = previousDesiredObjectPosition[4];
-            cb.pose.position.y = previousDesiredObjectPosition[5];
-            cb.scale.x = 0.11;
-            cb.scale.y = 0.11;
-            cb.scale.z = 0.11;
-            cb.color.r = 0.0;
-            cb.color.g = 0.5;
-            cb.color.b = 0.0;
-            cb.color.a = 0.9;
+            visualization_msgs::Marker cb = GenerateMarker( img_secs, img_nsecs, detections.size()+1, previousDesiredObjectPosition[4], previousDesiredObjectPosition[5], 0.11, 0.0, 0.5, 0.0, 0.9);
             cubes.markers.push_back(cb);
             lost_counter=0;
           }
@@ -722,22 +539,7 @@ int main( int argc, char** argv )
                 cv::rectangle(debug_img, cv::Point2f(previousDesiredObjectPosition[0], previousDesiredObjectPosition[1]), 
                         cv::Point2f(previousDesiredObjectPosition[2],previousDesiredObjectPosition[3]), cv::Scalar(0,0,255), 2);
                 last_color = cv::Scalar(0,0,255);
-                visualization_msgs::Marker cb;
-                cb.header.frame_id = "odom";
-                cb.header.stamp.sec = img_secs;
-                cb.header.stamp.nsec = img_nsecs;
-                cb.ns = "cube";
-                cb.id = detections.size()+1;
-                cb.type = 1;//CUBE
-                cb.pose.position.x = previousDesiredObjectPosition[4];
-                cb.pose.position.y = previousDesiredObjectPosition[5];
-                cb.scale.x = 0.11;
-                cb.scale.y = 0.11;
-                cb.scale.z = 0.11;
-                cb.color.r = 1.0;
-                cb.color.g = 0.0;
-                cb.color.b = 0.0;
-                cb.color.a = 0.9;
+                visualization_msgs::Marker cb = GenerateMarker( img_secs, img_nsecs, detections.size()+1, previousDesiredObjectPosition[4], previousDesiredObjectPosition[5], 0.11, 1.0, 0.0, 0.0, 0.9);
                 cubes.markers.push_back(cb);
                 //Если предыдущее положение было в зоне захвата, то перейти в режим доезжания, иначе продолжить движение по алгоритму
               }
@@ -763,22 +565,7 @@ int main( int argc, char** argv )
           destination_object = previousDesiredObjectPosition;
           cv::rectangle(debug_img, cv::Point2f(previousDesiredObjectPosition[0], previousDesiredObjectPosition[1]), 
                   cv::Point2f(previousDesiredObjectPosition[2],previousDesiredObjectPosition[3]), last_color, 2);
-          visualization_msgs::Marker cb;
-          cb.header.frame_id = "odom";
-          cb.header.stamp.sec = img_secs;
-          cb.header.stamp.nsec = img_nsecs;
-          cb.ns = "cube";
-          cb.id = detections.size()+1;
-          cb.type = 1;//CUBE
-          cb.pose.position.x = previousDesiredObjectPosition[4];
-          cb.pose.position.y = previousDesiredObjectPosition[5];
-          cb.scale.x = 0.11;
-          cb.scale.y = 0.11;
-          cb.scale.z = 0.11;
-          cb.color.r = 0.0;
-          cb.color.g = 1.0;
-          cb.color.b = 0.0;
-          cb.color.a = 0.9;
+          visualization_msgs::Marker cb = GenerateMarker( img_secs, img_nsecs, detections.size()+1, previousDesiredObjectPosition[4], previousDesiredObjectPosition[5], 0.11, 0.0, 1.0, 0.0, 0.9);
           cubes.markers.push_back(cb);
           //Если предыдущее положение было в зоне захвата, то перейти в режим доезжания, иначе продолжить движение по алгоритму
         }
@@ -846,7 +633,6 @@ int main( int argc, char** argv )
     ros::spinOnce();
 
 
-    //delta_img_det_prev = delta_img_det;
     std::cout<<state_line.str().c_str()<<"\n";
     cv::imshow("view", debug_img);
     cv::waitKey(10);
@@ -855,130 +641,116 @@ int main( int argc, char** argv )
   cv::destroyWindow("view");
   return 0;
 }
-/////////////////////////////////////////////////////////////////////////
-//float min_y_position = 0.6f;
-//Минимальная уверенность детектора ниже которой объекты не рассматриваются
-//float minimal_conf = 0.6f;
-//Минимальная уверенность трекера котрую пока не посчитать :(
-//const float tracker_min_conf = 0.3f;
-//Максимально допустимое изменение размера куба при сопровождении между кадрами
-//abs(old_w-new_w)/old_w<... and abs(old_h-new_h)/old_h<...
-//float maximal_cube_size_change_allowed = 0.05f;
-//Минимально допустимое смещение (в размерах рамки) при котором сопровождение считается потерянным
-//float maximal_displacement_allowed = 0.5f;
-/////////////////////////////////////////////////////////////////////////
-//Максимальная угловая скорость платформы, ограничение в целях безопасности
-//float max_angular_speed = 0.5f;
-//float min_angular_speed = 0.05f;
-//Максимальная линейная скорость платформы, ограничение в целях безопасности
-//float max_linear_speed = 0.8f;
-//float min_linear_speed = 0.05f;
-//Множитель для относительного смещения объекта от центра изображения по вертикали (угловая скорость)
-//float horizontal_displacement_multiplier = 0.5;
-//Множитель для относительного смещения объекта от минимального положения по горизонтали (линейная скорость)
-//float vertical_displacement_multiplier = 1.0/3.0;
-//Минмальное положение по вертикали ("желаемая" позиция куба по Y)
-//float vertical_desired_pos_rel = 0.98;
-/////////////////////////////////////////////////////////////////////////
-
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+visualization_msgs::Marker GenerateMarker( int secs, int nsecs, int id, double x, double y, double scale, float r, float g, float b, float a)
+{
+  visualization_msgs::Marker cb;
+  cb.header.frame_id = "odom";
+  cb.header.stamp.sec = secs;
+  cb.header.stamp.nsec = nsecs;
+  cb.ns = "cube";
+  cb.id = id;
+  cb.type = 1;//CUBE
+  cb.pose.position.x = x;
+  cb.pose.position.y = y;
+  cb.scale.x = scale;
+  cb.scale.y = scale;
+  cb.scale.z = scale;
+  cb.color.r = r;
+  cb.color.g = g;
+  cb.color.b = b;
+  cb.color.a = a;
+  return cb;
+}
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 //Проинициализировать параметры и накидать их в список, если уже не заданы (скажем, через *.launch-файл)
 void initParams(ros::NodeHandle* nh_p)
 {
     if(!nh_p->hasParam("min_y_position"))
         nh_p->setParam("min_y_position",min_y_position);
-
     if(!nh_p->hasParam("minimal_conf"))
         nh_p->setParam("minimal_conf",minimal_conf);
 
-    //if(!nh_p->hasParam("tracker_min_conf"))
-    //    nh_p->setParam("tracker_min_conf",tracker_min_conf);
-
-    /*if(!nh_p->hasParam("maximal_cube_size_change_allowed"))
-        nh_p->setParam("maximal_cube_size_change_allowed",maximal_cube_size_change_allowed);
-
-    if(!nh_p->hasParam("maximal_displacement_allowed"))
-        nh_p->setParam("maximal_displacement_allowed",maximal_displacement_allowed);*/
-
     if(!nh_p->hasParam("max_angular_speed"))
         nh_p->setParam("max_angular_speed",max_angular_speed);
-
     if(!nh_p->hasParam("min_angular_speed"))
         nh_p->setParam("min_angular_speed",min_angular_speed);
-
     if(!nh_p->hasParam("max_linear_speed"))
         nh_p->setParam("max_linear_speed",max_linear_speed);
-
     if(!nh_p->hasParam("min_linear_speed"))
         nh_p->setParam("min_linear_speed",min_linear_speed);
 
-    //if(!nh_p->hasParam("horizontal_displacement_multiplier"))
-    //    nh_p->setParam("horizontal_displacement_multiplier", horizontal_displacement_multiplier);
+    if(!nh_p->hasParam("min_trajectory_len"))
+        nh_p->setParam("min_trajectory_len",minimalTrajectoryLen);
 
-    //if(!nh_p->hasParam("vertical_displacement_multiplier"))
-    //    nh_p->setParam("vertical_displacement_multiplier", vertical_displacement_multiplier);
+    if(!nh_p->hasParam("pixel_displacement_allowed"))
+        nh_p->setParam("pixel_displacement_allowed",pixel_displacement_allowed);
+    if(!nh_p->hasParam("metric_displacement_allowed"))
+        nh_p->setParam("metric_displacement_allowed",metric_displacement_allowed);
 
-    //if(!nh_p->hasParam("vertical_desired_pos_rel"))
-    //    nh_p->setParam("vertical_desired_pos_rel",vertical_desired_pos_rel);
+    if(!nh_p->hasParam("vertical_desired_pos_rel"))
+        nh_p->setParam("vertical_desired_pos_rel",vertical_desired_pos_rel);
+    if(!nh_p->hasParam("maximum_lost_frames"))
+        nh_p->setParam("maximum_lost_frames",maximum_lost_frames);
+    if(!nh_p->hasParam("gathering_area_relative_width"))
+        nh_p->setParam("gathering_area_relative_width",gathering_area_relative_width);
+
+    if(!nh_p->hasParam("follow_mode"))
+        nh_p->setParam("follow_mode",followMode);
 }
-
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 //Прочитать значения параметров
 void readParams(ros::NodeHandle* nh_p)
 {
     if(nh_p->hasParam("min_y_position"))
         nh_p->getParam("min_y_position",min_y_position);
-
     if(nh_p->hasParam("minimal_conf"))
         nh_p->getParam("minimal_conf",minimal_conf);
 
-    //if(nh_p->hasParam("tracker_min_conf"))
-    //    nh_p->getParam("tracker_min_conf",tracker_min_conf);
-
-    /*if(nh_p->hasParam("maximal_cube_size_change_allowed"))
-        nh_p->getParam("maximal_cube_size_change_allowed",maximal_cube_size_change_allowed);
-
-    if(nh_p->hasParam("maximal_displacement_allowed"))
-        nh_p->getParam("maximal_displacement_allowed",maximal_displacement_allowed);*/
-
     if(nh_p->hasParam("max_angular_speed"))
         nh_p->getParam("max_angular_speed",max_angular_speed);
-
     if(nh_p->hasParam("min_angular_speed"))
         nh_p->getParam("min_angular_speed",min_angular_speed);
-
     if(nh_p->hasParam("max_linear_speed"))
         nh_p->getParam("max_linear_speed",max_linear_speed);
-
     if(nh_p->hasParam("min_linear_speed"))
         nh_p->getParam("min_linear_speed",min_linear_speed);
 
-    //if(nh_p->hasParam("horizontal_displacement_multiplier"))
-    //    nh_p->getParam("horizontal_displacement_multiplier", horizontal_displacement_multiplier);
+    if(nh_p->hasParam("min_trajectory_len"))
+        nh_p->getParam("min_trajectory_len",minimalTrajectoryLen);
 
-    //if(nh_p->hasParam("vertical_displacement_multiplier"))
-    //    nh_p->getParam("vertical_displacement_multiplier", vertical_displacement_multiplier);
+    if(nh_p->hasParam("pixel_displacement_allowed"))
+        nh_p->getParam("pixel_displacement_allowed",pixel_displacement_allowed);
+    if(nh_p->hasParam("metric_displacement_allowed"))
+        nh_p->getParam("metric_displacement_allowed",metric_displacement_allowed);
 
-    //if(nh_p->hasParam("vertical_desired_pos_rel"))
-    //    nh_p->getParam("vertical_desired_pos_rel",vertical_desired_pos_rel);
+    if(nh_p->hasParam("vertical_desired_pos_rel"))
+        nh_p->getParam("vertical_desired_pos_rel",vertical_desired_pos_rel);
+    if(nh_p->hasParam("maximum_lost_frames"))
+        nh_p->getParam("maximum_lost_frames",maximum_lost_frames);
+    if(nh_p->hasParam("metric_displacement_allowed"))
+        nh_p->getParam("metric_displacement_allowed",metric_displacement_allowed);
+
+    if(nh_p->hasParam("follow_mode"))
+        nh_p->getParam("follow_mode",followMode);
+
 }
-
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 void imageCallback(const sensor_msgs::CompressedImageConstPtr& msg)
 {
   try
   {
     std::lock_guard<std::mutex> img_guard(imageMutex);
-    currentImage = cv::imdecode(cv::Mat(msg->data),1);//convert compressed image data to cv::Mat
-    //cv::imshow("view", image);
-    //std::cout<<"Received image: "<<msg->header.stamp.sec<<"."<<msg->header.stamp.nsec<<"\n";
+    currentImage = cv::imdecode(cv::Mat(msg->data),1);
     img_sec = msg->header.stamp.sec;
     img_nsec = msg->header.stamp.nsec;
-    //cv::waitKey(10);
   }
   catch (cv_bridge::Exception& e)
   {
     ROS_ERROR("Could not convert to image!");
   }
 }
-
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 void calcBoxPosition(double u, double v, double mod, double &X, double&Z, double &angle){
 	double cam_h, cam_angle, cx, cy, fx, fy, xcam, ycam, floor_angle;
 	//camera position above ground, m
@@ -1003,7 +775,7 @@ void calcBoxPosition(double u, double v, double mod, double &X, double&Z, double
 
   return;
 }
-
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 void detectorCallback(const object_detection_msgs::DetectorResultConstPtr& msg)
 {
     try
@@ -1014,7 +786,7 @@ void detectorCallback(const object_detection_msgs::DetectorResultConstPtr& msg)
         detectionRobotX = msg->x;
         detectionRobotY = msg->y;
         detectionRobotYaw = msg->angleZ;
-        std::cout<<"detectionRobotX = "<<detectionRobotX<<" detectionRobotY = "<<detectionRobotY<<" detectionRobotYaw = "<<detectionRobotYaw<<"\n";
+        //std::cout<<"detectionRobotX = "<<detectionRobotX<<" detectionRobotY = "<<detectionRobotY<<" detectionRobotYaw = "<<detectionRobotYaw<<"\n";
         receivedRects.clear();
         for(int i=0; i<msg->res.size(); i++)
         {
@@ -1033,6 +805,7 @@ void detectorCallback(const object_detection_msgs::DetectorResultConstPtr& msg)
         ROS_ERROR("Exception occured during detector result receive");
     }
 }
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 void OdomCallback(const nav_msgs::Odometry::ConstPtr& msg)
 {
 	std::lock_guard<std::mutex> odom_guard(odometryDataMutex);
@@ -1044,7 +817,7 @@ void OdomCallback(const nav_msgs::Odometry::ConstPtr& msg)
 	odometryYaw = tf::getYaw(qq);
   odometryTimeStamp = msg->header.stamp.sec+static_cast<double>(msg->header.stamp.nsec)/1000000000;
 }
-
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 void CommandCallback(const std_msgs::String::ConstPtr& msg)
 {
   ros::Publisher tp = nh->advertise<geometry_msgs::Twist>("/state_machine/cmd_vel", 100);
@@ -1064,3 +837,4 @@ void CommandCallback(const std_msgs::String::ConstPtr& msg)
     current_state = STATE_SEARCH;
   }
 }
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
