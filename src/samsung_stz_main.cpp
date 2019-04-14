@@ -20,12 +20,14 @@
 #include <cv_bridge/cv_bridge.h>
 #include "geometry_msgs/Twist.h"
 #include "std_msgs/String.h"
+#include "std_msgs/Bool.h"
 #include "nav_msgs/Odometry.h"
 #include <tf/transform_datatypes.h>
 #include <visualization_msgs/Marker.h>
 #include <visualization_msgs/MarkerArray.h>
 #include <move_base_msgs/MoveBaseActionGoal.h>
 #include "object_detection_msgs/DetectorResult.h"
+#include <image_transport/image_transport.h>
 /////////////////////////////////////////////////////////////////////////
 // _____                               _                
 //|  __ \                             | |               
@@ -43,9 +45,11 @@ float minimal_conf = 0.7f;
 //Максимальная угловая скорость платформы, ограничение в целях безопасности
 float max_angular_speed = 0.5f;
 float min_angular_speed = 0.05f;
+float angular_speed_multiplier = 0.5f;
 //Максимальная линейная скорость платформы, ограничение в целях безопасности
 float max_linear_speed = 0.8f;
 float min_linear_speed = 0.05f;
+float linear_speed_multiplier = 0.5f;
 /////////////////////////////////////////////////////////////////////////
 //TRACKING PARAMETERS
 //То есть два кадра подряд надо найти объект рядом чтобы писать сообщения
@@ -59,6 +63,7 @@ bool useTracker = false;
 const int followModeMoveBaseGoal = 1;
 const int followModeControlByCoord = 2;
 int followMode = followModeMoveBaseGoal;
+
 /////////////////////////////////////////////////////////////////////////
 //FOLLOW PARAMETERS
 //Минмальное положение по вертикали ("желаемая" позиция куба по Y)
@@ -67,6 +72,13 @@ float vertical_desired_pos_rel = 0.98;
 int maximum_lost_frames = 500;
 //Relative to image width, width of corridor where cube must be lost to be gathered
 float gathering_area_relative_width = 0.2;
+
+//Длина доезда в метрах
+float follow_meter_length = 0.2;
+//Допустимое смещение от целевого положения по прибытию в точку сбора
+float gathering_delta_pos_allowed = 0.05;
+//Допустимое смещение по углу от целевого объекта
+float gathering_delta_angle_allowed = 0.05;
 /////////////////////////////////////////////////////////////////////////
 // ______                _   _                 
 //|  ____|              | | (_)                
@@ -84,6 +96,8 @@ void detectorCallback(const object_detection_msgs::DetectorResultConstPtr& msg);
 void OdomCallback(const nav_msgs::Odometry::ConstPtr& msg);
 //Прием данных командного топика
 void CommandCallback(const std_msgs::String::ConstPtr& msg);
+//Прием данных от захвата
+void grappleCallback(const std_msgs::Bool::ConstPtr& msg);
 /////////////////////////////////////////////////////////////////////////
 //FUNCTIONS
 void initParams(ros::NodeHandle* nh_p);
@@ -129,6 +143,10 @@ float odometryX = 0.0f;
 float odometryY = 0.0f;
 float odometryYaw = 0.0f;
 double odometryTimeStamp=0.0;
+/////////////////////////////////////////////////////////////////////////
+//GRAPPLE
+std::mutex grappleStateMutex;
+bool grappleHoldCube = false;
 /////////////////////////////////////////////////////////////////////////
 //TRACKING AND FOLLOW
 std::vector<double> previousDesiredObjectPosition;
@@ -176,10 +194,13 @@ int main( int argc, char** argv )
   ros::Subscriber sub_image = nh->subscribe("/usb_cam_front/image_raw/compressed", 1, imageCallback);
   ros::Subscriber sub_detector_res = nh->subscribe("/samsung/BBoxes", 1, detectorCallback);
   ros::Subscriber sub_odom = nh->subscribe("/kursant_driver/odom", 1, OdomCallback);
-  ros::Publisher twistPublisher = nh->advertise<geometry_msgs::Twist>("/state_machine/cmd_vel", 100);
+  ros::Publisher twistPublisher = nh->advertise<geometry_msgs::Twist>("/kursant_driver/cmd_vel", 100);
   ros::Publisher commandPublisher = nh->advertise<std_msgs::String>("/kursant_driver/command", 100);
   ros::Publisher cubesPublisher = nh->advertise<visualization_msgs::MarkerArray>("/samsung/cube_positions", 20);
-  ros::Publisher moveBaseGoalPublisher = nh->advertise<move_base_msgs::MoveBaseActionGoal>("/move_base/goal", 20);
+  ros::Publisher moveBaseGoalPublisher = nh->advertise<move_base_msgs::MoveBaseActionGoal>("/move_base/goal", 20);//
+  ros::Publisher debugGoalPosePublisher = nh->advertise<geometry_msgs::PoseStamped>("/samsung/goal_pose", 20);
+  image_transport::ImageTransport it(*nh);
+  image_transport::Publisher debugImagePublisher = it.advertise("/samsung_stz_main/debug_image", 1);
   //Служебный параметр для отключения отправки движения/цели при отладке
   nh->setParam("/samsung_stz_main/move", 0);
   //Может быть полезно если решим что-то сохранять в файлы или загружать
@@ -187,8 +208,8 @@ int main( int argc, char** argv )
   //if(!package_path.empty())
   //  std::cout<<"Package path: "<<package_path.c_str()<<"\n";
   //Создать окно отображения информации об объектах и сопровождении
-  cv::namedWindow("view");
-  cv::startWindowThread();
+  //cv::namedWindow("view");
+  //cv::startWindowThread();
   //Протинциализировать параметры из xml-launch файла
   initParams(nh_p);
   //Flag, if object we detected is confident (tracked successfully for more than minimalTrajectoryLen)
@@ -210,6 +231,12 @@ int main( int argc, char** argv )
   {
     //Считать параметры на случай если они изменились
     readParams(nh_p);
+
+    //First of all - let's check grapple state
+    grappleStateMutex.lock();
+    bool grapple_hold_cube = grappleHoldCube;
+    grappleStateMutex.unlock();
+
     //Получить блокировку, извлечь текущую картинку для отображения
     //Получить также таймстамп картинки для сравнения с таймстампами детектора
     cv::Mat debug_img, tracking_img;
@@ -248,6 +275,19 @@ int main( int argc, char** argv )
     det_yaw = detectionRobotYaw;
     detectionDataMutex.unlock();
     bool detection_received = detections.size()>0;
+  
+    double odom_x=0;
+    double odom_y=0;
+    double odom_yaw=0;
+    double odom_stamp=0;
+    odometryDataMutex.lock();
+    odom_x = odometryX;
+    odom_y = odometryY;
+    odom_yaw = odometryYaw;
+    odom_stamp = odometryTimeStamp;
+    odometryDataMutex.unlock();
+    
+
     //Расчет разницы по времени между детекцией и текущим кадром
     //delta_img_det = image_tstamp - detector_tstamp;
     ///////////////////////////////
@@ -273,7 +313,6 @@ int main( int argc, char** argv )
     {
         //Расчет пространственных координат куба для каждого прямоугольника
         //Опубликовать расчетные позы кубов
-        std::vector<std::vector<float> > coords;
         std::vector<std::vector<double> > current_detections;
         for(int i=0; i<detections.size(); i++)
         {
@@ -296,8 +335,16 @@ int main( int argc, char** argv )
               double X = (X1+X2)/2;
               double Z = (Z1+Z2)/2;
               double A = (angle1+angle2)/2;
-              std::vector<float> r;
-              r.resize(5, 0.0f);
+
+              cv::rectangle(debug_img, cv::Point2f(xmin, ymin), cv::Point2f(xmax, ymax), cv::Scalar(255,0,0), 2);
+              std::stringstream ss;
+              ss.setf(std::ios::fixed);
+              ss.precision(2);
+              ss<<"X="<<X<<" Z="<<Z;
+              //Тут печатаем на картинке пространственные координаты
+              cv::putText(debug_img, ss.str(), cvPoint(xmin,ymin-10),
+                  cv::FONT_HERSHEY_COMPLEX_SMALL, 0.8, cvScalar(255,0,0), 1, CV_AA);        
+
               //r[0] = X;
               //r[1] = Z;
               //r[2] = A;
@@ -343,17 +390,8 @@ int main( int argc, char** argv )
             float curr_x = current_detections[i][4];
             float curr_y = current_detections[i][5];
             float curr_a = current_detections[i][6];
-            
-            cv::rectangle(debug_img, cv::Point2f(xmin, ymin), cv::Point2f(xmax, ymax), cv::Scalar(255,0,0), 2);
-            std::stringstream ss;
-            ss.setf(std::ios::fixed);
-            ss.precision(2);
-            ss<<"X="<<coords[i][0]<<" Y="<<coords[i][1];
-            //Тут печатаем на картинке пространственные координаты
-            cv::putText(debug_img, ss.str(), cvPoint(xmin,ymin-10),
-                cv::FONT_HERSHEY_COMPLEX_SMALL, 0.8, cvScalar(200,200,250), 1, CV_AA);
   
-            visualization_msgs::Marker cb = GenerateMarker( img_secs, img_nsecs, detections.size()+1, curr_x, curr_y, 0.1,204.0/255.0,168.0/255,45.0/255.0, 1.0);
+            visualization_msgs::Marker cb = GenerateMarker( img_secs, img_nsecs, i, curr_x, curr_y, 0.1,204.0/255.0,168.0/255,45.0/255.0, 1.0);
             cubes.markers.push_back(cb);
 
 
@@ -379,6 +417,7 @@ int main( int argc, char** argv )
             if(ymax>low_y)
             {
                 desired_rect =  current_detections[i];
+                low_y = ymax;
             }  
         }
 
@@ -423,6 +462,9 @@ int main( int argc, char** argv )
     currentStateMutex.unlock();
     std::stringstream state_line;
     static int lost_counter=0;
+
+    static move_base_msgs::MoveBaseActionGoal gathering_goal = move_base_msgs::MoveBaseActionGoal();
+
     if(state == STATE_SEARCH)
     {
           state_line<<"State: search, ";
@@ -479,7 +521,19 @@ int main( int argc, char** argv )
     }
     else if(state==FOLLOW_CUBE)
     {
-      state_line<<"State: follow, ";
+
+      state_line<<"State: follow, ";      //Мы доехали, сменить состояние
+      if(grapple_hold_cube)
+      {
+        state_line<<"cube grappled ";
+        currentStateMutex.lock();
+        current_state = STATE_SEARCH;
+        currentStateMutex.unlock(); 
+        commandPublisher.publish(msg_box_taken);
+        geometry_msgs::Twist twist;
+        twistPublisher.publish(twist);  
+        ros::spinOnce();
+      }
       //Here we designate an object to which we want t0
       //We found confident object, send message
       std::vector<double> destination_object;
@@ -529,6 +583,9 @@ int main( int argc, char** argv )
               currentStateMutex.lock();
               current_state = STATE_SEARCH;
               currentStateMutex.unlock();
+              geometry_msgs::Twist twist;
+              twistPublisher.publish(twist);  
+              ros::spinOnce();
             }
             else
             {
@@ -552,6 +609,9 @@ int main( int argc, char** argv )
                 currentStateMutex.lock();
                 current_state = STATE_SEARCH;
                 currentStateMutex.unlock();
+                geometry_msgs::Twist twist;
+                twistPublisher.publish(twist);  
+                ros::spinOnce();
               }
             }
           }
@@ -559,25 +619,79 @@ int main( int argc, char** argv )
       }
       else
       {
+
         if(previousDesiredObjectPosition.size()>0)
         {
+          //Это тоже ситуация, когда мы едем вслепую, просто либо обнаружения не пришли, это тут, либо пришли но там нет нашего объекта
+          lost_counter+=1;
           state_line<<"no frame, use last position ";
           destination_object = previousDesiredObjectPosition;
           cv::rectangle(debug_img, cv::Point2f(previousDesiredObjectPosition[0], previousDesiredObjectPosition[1]), 
                   cv::Point2f(previousDesiredObjectPosition[2],previousDesiredObjectPosition[3]), last_color, 2);
           visualization_msgs::Marker cb = GenerateMarker( img_secs, img_nsecs, detections.size()+1, previousDesiredObjectPosition[4], previousDesiredObjectPosition[5], 0.11, 0.0, 1.0, 0.0, 0.9);
           cubes.markers.push_back(cb);
-          //Если предыдущее положение было в зоне захвата, то перейти в режим доезжания, иначе продолжить движение по алгоритму
+
         }
       }
                               
 
       if(destination_object.size()>0)
       {
+      
+        //Если предыдущее положение было в зоне захвата, то перейти в режим доезжания, иначе продолжить движение по алгоритму
+        double ymax = destination_object[3];
+        double xmin = destination_object[0];
+        double xmax = destination_object[2];
+        if(xmin>xmax)
+        {
+          double temp = xmin;
+          xmin=xmax;
+          xmax = temp;
+        }       
+
+        //Переключение состояния по нижней границе
+        if((xmin>desired_area_left) && (xmax<desired_area_right) && (ymax>=(desired_y)))
+        {
+          double next_x = odom_x + follow_meter_length*cos(odom_yaw);
+          double next_y = odom_y + follow_meter_length*sin(odom_yaw);
+      
+          tf::Quaternion qq = tf::createQuaternionFromYaw(odom_yaw);
+
+          move_base_msgs::MoveBaseActionGoal goal;
+          goal.header.frame_id = "odom";
+          goal.header.stamp.sec = img_secs;
+          goal.header.stamp.nsec = img_nsecs;
+          goal.goal_id.stamp.sec = img_secs;
+          goal.goal_id.stamp.nsec = img_secs;
+          //goal.goal_id.id = "cube";
+          goal.goal.target_pose.header.stamp.sec = img_secs;
+          goal.goal.target_pose.header.stamp.nsec = img_nsecs;
+          goal.goal.target_pose.header.frame_id = "odom";
+          goal.goal.target_pose.pose.position.z=0;
+          goal.goal.target_pose.pose.position.x = next_x;
+          goal.goal.target_pose.pose.position.y = next_y;
+          //double angle = det_yaw+destination_object[6];
+          tf::quaternionTFToMsg(qq,goal.goal.target_pose.pose.orientation);
+          //gathering_goal = goal;
+
+          currentStateMutex.lock();
+          //current_state = GATHER_LOST_CUBE;
+          currentStateMutex.unlock(); 
+        }
+    
         state_line<<", Destination exists ";
         //cv::rectangle(debug_img, cv::Point2f(destination_object[0], destination_object[1]), 
         //                cv::Point2f(destination_object[2],destination_object[3]), cv::Scalar(0,255,0), 2)
-
+    
+        //Рассчитываем дельту и угол
+        double dest_x = destination_object[4];
+        double dest_y = destination_object[5];// + follow_meter_length*sin(odom_yaw);
+        double delta_x = dest_x - odom_x;
+        double delta_y = dest_y - odom_y;
+        double dest_angle = atan2(delta_y, delta_x);
+        tf::Quaternion qq = tf::createQuaternionFromYaw(dest_angle);
+        dest_x+=follow_meter_length*cos(dest_angle);
+        dest_y+=follow_meter_length*sin(dest_angle);
          //Формируем цель
         move_base_msgs::MoveBaseActionGoal goal;
         goal.header.frame_id = "odom";
@@ -590,21 +704,125 @@ int main( int argc, char** argv )
         goal.goal.target_pose.header.stamp.nsec = img_nsecs;
         goal.goal.target_pose.header.frame_id = "odom";
         goal.goal.target_pose.pose.position.z=0;
-        goal.goal.target_pose.pose.position.x = destination_object[4];
-        goal.goal.target_pose.pose.position.y = destination_object[5];
-        double angle = det_yaw-destination_object[6];
-        goal.goal.target_pose.pose.orientation.x=0;
-        goal.goal.target_pose.pose.orientation.y=0;
-        goal.goal.target_pose.pose.orientation.z=angle;
-        goal.goal.target_pose.pose.orientation.w=1;
+        goal.goal.target_pose.pose.position.x = dest_x;
+        goal.goal.target_pose.pose.position.y = dest_y;
+        //double angle = det_yaw+destination_object[6];
+        tf::quaternionTFToMsg(qq,goal.goal.target_pose.pose.orientation);
+        geometry_msgs::PoseStamped gp;
+        gp.header = goal.goal.target_pose.header;
+        gp.pose = goal.goal.target_pose.pose;
+        debugGoalPosePublisher.publish(gp);
+        ros::spinOnce();
 
-        int move = 0;
-        nh->getParam("/samsung_stz_main/move", move);
-        if(move==1)
+
+        double delta_angle = dest_angle-odom_yaw;
+        delta_angle+=(delta_angle>M_PI) ? -M_PI*2 : (delta_angle<-M_PI) ? 2*M_PI : 0;       
+
+
+      if(fabs(delta_x)<gathering_delta_pos_allowed && fabs(delta_y)<gathering_delta_pos_allowed && fabs(delta_angle)<gathering_delta_angle_allowed)
+      {
+        //Считаем что прибыли в точку назначения, раз куб не захватили, то его и нет
+        state_line<<" finish move, not found, end ";
+        commandPublisher.publish(msg_box_not_taken);
+        ros::spinOnce();
+        currentStateMutex.lock();
+        current_state = STATE_SEARCH;//GATHER_LOST_CUBE
+        currentStateMutex.unlock();
+        geometry_msgs::Twist twist;
+        twistPublisher.publish(twist);  
+        ros::spinOnce();
+        continue;
+      }
+
+        if(followMode==followModeMoveBaseGoal)
         {
-          moveBaseGoalPublisher.publish(goal);
+          int move = 0;
+          nh->getParam("/samsung_stz_main/move", move);
+          if(move==1)
+          {
+            int da_sign = (delta_angle>0)?(1):(-1);
+            if(fabs(delta_angle)>M_PI/9)
+            {
+              //ЗАметка: Если объект в задней полусфере, надо сначала отдавать команды только на поворот, а когда будет острый угол хотя бы
+              //тогда уже и по положению управлять
+              std::cout<<"ROTAAATE!!!\n";
+              geometry_msgs::Twist twist;
+              twist.angular.z = da_sign*std::min<double>(max_angular_speed, fabs(delta_angle))*angular_speed_multiplier;
+              twistPublisher.publish(twist);  
+              ros::spinOnce();
+            }  
+            else
+            {
+              moveBaseGoalPublisher.publish(goal);
+              ros::spinOnce();
+            }
+          }
         }
-        
+        else
+        {
+
+          //ЗАметка: Если объект в задней полусфере, надо сначала отдавать команды только на поворот, а когда будет острый угол хотя бы
+          //тогда уже и по положению управлять
+          //double delta_angle = dest_angle-odom_yaw;
+          //delta_angle+=(delta_angle>M_PI) ? -M_PI*2 : (delta_angle<-M_PI) ? 2*M_PI : 0;
+          //state_line<<"odom_yaw="<<odom_yaw<<" dest_angle="<<dest_angle<<" "<<" da="<<delta_angle<<" "; 
+          int da_sign = (delta_angle>0)?(1):(-1);
+          double angular_vel = 0;
+          double linear_vel = 0;
+          if(fabs(delta_angle)>M_PI/3)
+          {
+            //ЗАметка: Если объект в задней полусфере, надо сначала отдавать команды только на поворот, а когда будет острый угол хотя бы
+            //тогда уже и по положению управлять
+            linear_vel = 0;
+            angular_vel = da_sign*max_angular_speed;
+
+          }  
+          else
+          {
+            if(fabs(delta_angle)>max_angular_speed)
+            {
+              angular_vel = da_sign*max_angular_speed;
+            }
+            else
+            {
+              angular_vel = da_sign*fabs(delta_angle);
+            }
+          } 
+
+          double delta_r = fabs(sqrt(delta_x*delta_x + delta_y*delta_y));
+          if(fabs(delta_r)>max_linear_speed)
+          {
+            linear_vel = max_linear_speed;
+          }
+          else
+          {
+            linear_vel = fabs(delta_r);
+          }
+
+          angular_vel*=angular_speed_multiplier;
+          linear_vel*=linear_speed_multiplier;
+          state_line<<" ang_vel = "<<angular_vel<<" lin_vel = "<<linear_vel<<" ";
+          static int prev_move=0;
+          int move = 0;
+          nh->getParam("/samsung_stz_main/move", move);
+          if(move==1)
+          {
+            geometry_msgs::Twist twist;
+            twist.linear.x = linear_vel;
+            twist.angular.z = angular_vel;
+            twistPublisher.publish(twist);  
+            ros::spinOnce();
+          }
+          if(move == 0 && prev_move ==1)
+          {
+            geometry_msgs::Twist twist;
+            twistPublisher.publish(twist);  
+            ros::spinOnce();
+          }
+          prev_move=move;
+          
+        }
+        ros::spinOnce();
       }
     }
     else if(state==GATHER_LOST_CUBE)
@@ -613,6 +831,132 @@ int main( int argc, char** argv )
       //if object reached but cube not touched move forward for x centimeters, and send message @cube lost@
       //If we touch cube then we switch state in grapple callback, and newer reach destination, NOTE IT
       state_line<<"State: gather lost in front, ";
+  
+      //Мы доехали, сменить состояние
+      if(grapple_hold_cube)
+      {
+        state_line<<"gathered successfully ";
+        currentStateMutex.lock();
+        current_state = STATE_SEARCH;
+        currentStateMutex.unlock(); 
+        commandPublisher.publish(msg_box_taken);
+        ros::spinOnce();
+        geometry_msgs::Twist twist;
+        twistPublisher.publish(twist);  
+        ros::spinOnce();
+      }
+
+      //В общем, по плану это работает так
+      //Приходим мы сюда если gathering_goal и только если задан
+      //В режиме движения по стеку мы просто оцениваем разницу, и если она меньше порогов, то стопаем и говорим, что потеряли
+
+      double dest_x = gathering_goal.goal.target_pose.pose.position.x;//  destination_object[4];
+      double dest_y = gathering_goal.goal.target_pose.pose.position.y;
+      double delta_x = dest_x - odom_x;
+      double delta_y = dest_y - odom_y;
+      double dest_angle = atan2(delta_y, delta_x);
+      double delta_angle = dest_angle-odom_yaw;
+      delta_angle+=(delta_angle>M_PI) ? -M_PI*2 : (delta_angle<-M_PI) ? 2*M_PI : 0;       
+
+      geometry_msgs::PoseStamped gp;
+      gp.header = gathering_goal.goal.target_pose.header;
+      gp.pose = gathering_goal.goal.target_pose.pose;
+      debugGoalPosePublisher.publish(gp);
+      ros::spinOnce();
+
+
+      if(fabs(delta_x)<gathering_delta_pos_allowed && fabs(delta_y)<gathering_delta_pos_allowed && fabs(delta_angle)<gathering_delta_angle_allowed)
+      {
+        //Считаем что прибыли в точку назначения, раз куб не захватили, то его и нет
+        state_line<<" finish move, not found, end ";
+        commandPublisher.publish(msg_box_not_taken);
+        ros::spinOnce();
+        currentStateMutex.lock();
+        current_state = STATE_SEARCH;
+        currentStateMutex.unlock();
+        geometry_msgs::Twist twist;
+        twistPublisher.publish(twist);  
+        ros::spinOnce();
+        continue;
+      }
+
+      if(followMode==followModeControlByCoord)
+      { 
+          //ЗАметка: Если объект в задней полусфере, надо сначала отдавать команды только на поворот, а когда будет острый угол хотя бы
+          //тогда уже и по положению управлять
+          //double delta_angle = dest_angle-odom_yaw;
+          //delta_angle+=(delta_angle>M_PI) ? -M_PI*2 : (delta_angle<-M_PI) ? 2*M_PI : 0;
+          //state_line<<"odom_yaw="<<odom_yaw<<" dest_angle="<<dest_angle<<" "<<" da="<<delta_angle<<" "; 
+          int da_sign = (delta_angle>0)?(1):(-1);
+          double angular_vel = 0;
+          double linear_vel = 0;
+          if(fabs(delta_angle)>M_PI/3)
+          {
+            //ЗАметка: Если объект в задней полусфере, надо сначала отдавать команды только на поворот, а когда будет острый угол хотя бы
+            //тогда уже и по положению управлять
+            linear_vel = 0;
+            angular_vel = da_sign*max_angular_speed;
+          }  
+          else
+          {
+            if(fabs(delta_angle)>max_angular_speed)
+            {
+              angular_vel = da_sign*max_angular_speed;
+            }
+            else
+            {
+              angular_vel = da_sign*min_angular_speed,fabs(delta_angle);
+            }
+          } 
+
+          double delta_r = fabs(sqrt(delta_x*delta_x + delta_y*delta_y));
+          if(fabs(delta_r)>max_linear_speed)
+          {
+            linear_vel = max_linear_speed;
+          }
+          else
+          {
+            linear_vel = fabs(delta_r);
+          }
+
+          angular_vel*=angular_speed_multiplier;
+          linear_vel*=linear_speed_multiplier;
+          state_line<<" ang_vel = "<<angular_vel<<" lin_vel = "<<linear_vel<<" ";
+          static int prev_move=0;
+          int move = 0;
+          nh->getParam("/samsung_stz_main/move", move);
+          if(move==1)
+          {
+            geometry_msgs::Twist twist;
+            twist.linear.x = linear_vel;
+            twist.angular.z = angular_vel;
+            twistPublisher.publish(twist);  
+            ros::spinOnce();
+          }
+          if(move == 0 && prev_move == 1)
+          {
+            geometry_msgs::Twist twist;
+            twistPublisher.publish(twist);  
+            ros::spinOnce();
+          }
+          prev_move=move;     
+      }
+      else
+      {
+        //Задали цель и движемся к ней, тут управлять не надо, наверное?
+      }  
+      /*
+      static int counter = 0;
+      counter+=1;
+      if(counter>1000)
+      {
+        counter=0;
+        commandPublisher.publish(msg_box_not_taken);
+        currentStateMutex.lock();
+        current_state = STATE_SEARCH;
+        currentStateMutex.unlock();
+      }
+      */
     }
     else
     {
@@ -634,8 +978,10 @@ int main( int argc, char** argv )
 
 
     std::cout<<state_line.str().c_str()<<"\n";
-    cv::imshow("view", debug_img);
-    cv::waitKey(10);
+    //cv::imshow("view", debug_img);
+    //cv::waitKey(10);
+    sensor_msgs::ImagePtr msg = cv_bridge::CvImage(std_msgs::Header(), "bgr8", debug_img).toImageMsg();
+    debugImagePublisher.publish(msg);
     ros::spinOnce();
   }
   cv::destroyWindow("view");
@@ -653,9 +999,9 @@ visualization_msgs::Marker GenerateMarker( int secs, int nsecs, int id, double x
   cb.type = 1;//CUBE
   cb.pose.position.x = x;
   cb.pose.position.y = y;
-  cb.scale.x = scale;
-  cb.scale.y = scale;
-  cb.scale.z = scale;
+  cb.scale.x = scale/2.0;
+  cb.scale.y = scale/2.0;
+  cb.scale.z = scale/2.0;
   cb.color.r = r;
   cb.color.g = g;
   cb.color.b = b;
@@ -675,10 +1021,14 @@ void initParams(ros::NodeHandle* nh_p)
         nh_p->setParam("max_angular_speed",max_angular_speed);
     if(!nh_p->hasParam("min_angular_speed"))
         nh_p->setParam("min_angular_speed",min_angular_speed);
+    if(!nh_p->hasParam("angular_speed_multiplier"))
+        nh_p->setParam("angular_speed_multiplier",angular_speed_multiplier);
     if(!nh_p->hasParam("max_linear_speed"))
         nh_p->setParam("max_linear_speed",max_linear_speed);
     if(!nh_p->hasParam("min_linear_speed"))
         nh_p->setParam("min_linear_speed",min_linear_speed);
+    if(!nh_p->hasParam("linear_speed_multiplier"))
+        nh_p->setParam("linear_speed_multiplier",linear_speed_multiplier);
 
     if(!nh_p->hasParam("min_trajectory_len"))
         nh_p->setParam("min_trajectory_len",minimalTrajectoryLen);
@@ -694,6 +1044,13 @@ void initParams(ros::NodeHandle* nh_p)
         nh_p->setParam("maximum_lost_frames",maximum_lost_frames);
     if(!nh_p->hasParam("gathering_area_relative_width"))
         nh_p->setParam("gathering_area_relative_width",gathering_area_relative_width);
+
+    if(!nh_p->hasParam("follow_meter_length"))
+        nh_p->setParam("follow_meter_length",follow_meter_length);
+    if(!nh_p->hasParam("gathering_delta_pos_allowed"))
+        nh_p->setParam("gathering_delta_pos_allowed",gathering_delta_pos_allowed);
+    if(!nh_p->hasParam("gathering_delta_angle_allowed"))
+        nh_p->setParam("gathering_delta_angle_allowed",gathering_delta_angle_allowed);
 
     if(!nh_p->hasParam("follow_mode"))
         nh_p->setParam("follow_mode",followMode);
@@ -711,10 +1068,14 @@ void readParams(ros::NodeHandle* nh_p)
         nh_p->getParam("max_angular_speed",max_angular_speed);
     if(nh_p->hasParam("min_angular_speed"))
         nh_p->getParam("min_angular_speed",min_angular_speed);
+    if(nh_p->hasParam("angular_speed_multiplier"))
+        nh_p->getParam("angular_speed_multiplier",angular_speed_multiplier);
     if(nh_p->hasParam("max_linear_speed"))
         nh_p->getParam("max_linear_speed",max_linear_speed);
     if(nh_p->hasParam("min_linear_speed"))
         nh_p->getParam("min_linear_speed",min_linear_speed);
+    if(nh_p->hasParam("linear_speed_multiplier"))
+        nh_p->getParam("linear_speed_multiplier",linear_speed_multiplier);
 
     if(nh_p->hasParam("min_trajectory_len"))
         nh_p->getParam("min_trajectory_len",minimalTrajectoryLen);
@@ -730,6 +1091,13 @@ void readParams(ros::NodeHandle* nh_p)
         nh_p->getParam("maximum_lost_frames",maximum_lost_frames);
     if(nh_p->hasParam("metric_displacement_allowed"))
         nh_p->getParam("metric_displacement_allowed",metric_displacement_allowed);
+
+    if(nh_p->hasParam("follow_meter_length"))
+        nh_p->getParam("follow_meter_length",follow_meter_length);
+    if(nh_p->hasParam("gathering_delta_pos_allowed"))
+        nh_p->getParam("gathering_delta_pos_allowed",gathering_delta_pos_allowed);
+    if(nh_p->hasParam("gathering_delta_angle_allowed"))
+        nh_p->getParam("gathering_delta_angle_allowed",gathering_delta_angle_allowed);
 
     if(nh_p->hasParam("follow_mode"))
         nh_p->getParam("follow_mode",followMode);
@@ -838,3 +1206,21 @@ void CommandCallback(const std_msgs::String::ConstPtr& msg)
   }
 }
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+/*//Прием данных от захвата
+//STATE MACHINE
+//Search for cubes and send the message as confident cube found
+const int STATE_SEARCH = 0;
+//Here we follow the cube using its pixel or metric coords, if cube is lost or no detection we still move to coords and hope to find new one in almost same place
+const int FOLLOW_CUBE = 1;
+//Here we move forward until reach cube or pass desired length
+const int GATHER_LOST_CUBE = 2;
+std::mutex currentStateMutex;
+int current_state = 0;
+*/
+void grappleCallback(const std_msgs::Bool::ConstPtr& msg)
+{
+  grappleStateMutex.lock();
+  grappleHoldCube = msg->data;
+  grappleStateMutex.unlock();
+}

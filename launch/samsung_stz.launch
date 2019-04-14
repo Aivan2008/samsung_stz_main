@@ -8,13 +8,17 @@
         <param name="minimal_conf" value="0.7"/>
 
 <!--Максимальная угловая скорость платформы, ограничение в целях безопасности-->
-        <param name="max_angular_speed" value="0.3"/>
+        <param name="max_angular_speed" value="0.8"/>
 <!--Минимальная угловая скорость платформы, ограничение в целях безопасности-->
-        <param name="min_angular_speed" value="0.001"/>
+        <param name="min_angular_speed" value="0.1"/>
+<!--Множитель конечной угловой скорости, для регуляции радиуса угла доворота на цель-->
+        <param name="angular_speed_multiplier" value="1.0"/>
 <!--Максимальная линейная скорость платформы, ограничение в целях безопасности-->
-        <param name="max_linear_speed" value="0.8"/>
+        <param name="max_linear_speed" value="0.5"/>
 <!--Минимальная линейная скорость платформы, ограничение в целях безопасности-->
         <param name="min_linear_speed" value="0.05"/>
+<!--Множитель конечной линейной скорости для регуляции скорости-->
+        <param name="linear_speed_multiplier" value="0.5"/>
 
 <!-- То есть два кадра подряд надо найти объект рядом чтобы писать сообщениe -->
         <param name="minimalTrajectoryLen" value="2"/>
@@ -25,13 +29,20 @@
         <param name="metric_displacement_allowed" value="0.08"/>
 
 <!-- Минмальное положение по вертикали ("желаемая" позиция куба по Y) -->
-        <param name="horizontal_divertical_desired_pos_relsplacement_multiplier" value="0.98"/>
+        <param name="vertical_desired_pos_rel" value="0.98"/>
 <!-- Ho much time we should move to earlier detected object until say we lost it -->
-        <param name="maximum_lost_frames" value="500"/>
+        <param name="maximum_lost_frames" value="1000"/>
 <!-- Relative to image width, width of corridor where cube must be lost to be gathered-->
         <param name="gathering_area_relative_width" value="0.2"/>
 
+<!-- Длина доезда в метрах -->
+        <param name="follow_meter_length" value="0.2"/>
+<!-- Допустимое смещение от целевого положения в метрах по прибытию в точку подбора -->
+        <param name="gathering_delta_pos_allowed" value="0.05"/>
+<!-- Допустимое смещение по углу от целевого объекта-->
+        <param name="gathering_delta_angle_allowed" value="0.05"/>
+
 <!-- Способ управления роботом: 1 - по MoveBase/Goal, 2 - по координатам куба своими силами-->
-        <param name="followMode" value="1"/>
+        <param name="follow_mode" value="1"/>
     </node>
 </launch>
