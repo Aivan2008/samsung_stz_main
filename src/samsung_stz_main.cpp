@@ -106,6 +106,8 @@ void readParams(ros::NodeHandle* nh_p);
 void calcBoxPosition(double u, double v, double mod, double &X, double&Z, double &angle);
 //
 visualization_msgs::Marker GenerateMarker( int secs, int nsecs, int id, double x, double y, double scale, float r, float g, float b, float a);
+//
+move_base_msgs::MoveBaseActionGoal GenerateGoal(int sec, int nsec, double dest_x, double dest_y, double dest_angle);
 /////////////////////////////////////////////////////////////////////////
 // _____        _        
 //|  __ \      | |       
@@ -530,9 +532,18 @@ int main( int argc, char** argv )
         current_state = STATE_SEARCH;
         currentStateMutex.unlock(); 
         commandPublisher.publish(msg_box_taken);
-        geometry_msgs::Twist twist;
-        twistPublisher.publish(twist);  
-        ros::spinOnce();
+        if(followMode==followModeMoveBaseGoal)
+        {
+          move_base_msgs::MoveBaseActionGoal goal_reset = GenerateGoal(img_secs, img_nsecs, odom_x, odom_y, odom_yaw);
+          moveBaseGoalPublisher.publish(goal_reset);
+          ros::spinOnce();
+        }
+        else
+        {
+          geometry_msgs::Twist twist;
+          twistPublisher.publish(twist);  
+          ros::spinOnce();
+        }
       }
       //Here we designate an object to which we want t0
       //We found confident object, send message
@@ -583,9 +594,18 @@ int main( int argc, char** argv )
               currentStateMutex.lock();
               current_state = STATE_SEARCH;
               currentStateMutex.unlock();
-              geometry_msgs::Twist twist;
-              twistPublisher.publish(twist);  
-              ros::spinOnce();
+              if(followMode==followModeMoveBaseGoal)
+              {
+                move_base_msgs::MoveBaseActionGoal goal_reset = GenerateGoal(img_secs, img_nsecs, odom_x, odom_y, odom_yaw);
+                moveBaseGoalPublisher.publish(goal_reset);
+                ros::spinOnce();
+              }
+              else
+              {
+                geometry_msgs::Twist twist;
+                twistPublisher.publish(twist);  
+                ros::spinOnce();
+              }
             }
             else
             {
@@ -608,16 +628,19 @@ int main( int argc, char** argv )
                 ros::spinOnce();
                 currentStateMutex.lock();
                 current_state = STATE_SEARCH;
-                currentStateMutex.unlock();
-                if(followMode==followModeControlByCoord)
-                { 
-                  geometry_msgs::Twist twist;
-                  twistPublisher.publish(twist);  
+                currentStateMutex.unlock(); 
+                if(followMode==followModeMoveBaseGoal)
+                {
+                  move_base_msgs::MoveBaseActionGoal goal_reset = GenerateGoal(img_secs, img_nsecs, odom_x, odom_y, odom_yaw);
+                  moveBaseGoalPublisher.publish(goal_reset);
                   ros::spinOnce();
                 }
                 else
-                _
-                
+                {
+                  geometry_msgs::Twist twist;
+                  twistPublisher.publish(twist);  
+                  ros::spinOnce();
+                }              
               }
             }
           }
@@ -660,28 +683,8 @@ int main( int argc, char** argv )
         {
           double next_x = odom_x + follow_meter_length*cos(odom_yaw);
           double next_y = odom_y + follow_meter_length*sin(odom_yaw);
-      
-          tf::Quaternion qq = tf::createQuaternionFromYaw(odom_yaw);
-          move_base_msgs::MoveBaseActionGoal goal2;
-          goal2.header.frame_id = "odom";
-          goal2.header.stamp.sec = img_secs;
-          goal2.header.stamp.nsec = img_nsecs;
-          goal2.goal_id.stamp.sec = img_secs;
-          goal2.goal_id.stamp.nsec = img_secs;
-          //goal.goal_id.id = "cube";
-          goal2.goal.target_pose.header.stamp.sec = img_secs;
-          goal2.goal.target_pose.header.stamp.nsec = img_nsecs;
-          goal2.goal.target_pose.header.frame_id = "odom";
-          goal2.goal.target_pose.pose.position.z=0;
-          goal2.goal.target_pose.pose.position.x = next_x;
-          goal2.goal.target_pose.pose.position.y = next_y;
-          //double angle = det_yaw+destination_object[6];
-          tf::quaternionTFToMsg(qq,goal.goal.target_pose.pose.orientation);
-          //gathering_goal = goal2;
 
-          //currentStateMutex.lock();
-          //current_state = GATHER_LOST_CUBE;
-          //currentStateMutex.unlock(); 
+          move_base_msgs::MoveBaseActionGoal goal2 = GenerateGoal(img_secs, img_nsecs, next_x, next_y, odom_yaw);
         }
     
         state_line<<", Destination exists ";
@@ -702,27 +705,11 @@ int main( int argc, char** argv )
           delta_x = dest_x - odom_x;
           delta_y = dest_y - odom_y;
           dest_angle = atan2(delta_y, delta_x);
-          delta_angle = dest_angle-odom_yaw;
-          delta_angle+=(delta_angle>M_PI) ? -M_PI*2 : (delta_angle<-M_PI) ? 2*M_PI : 0;  
-          tf::Quaternion qq = tf::createQuaternionFromYaw(dest_angle);
           dest_x+=follow_meter_length*cos(dest_angle);
           dest_y+=follow_meter_length*sin(dest_angle);
-          //Формируем цель
-          //move_base_msgs::MoveBaseActionGoal goal;
-          goal.header.frame_id = "odom";
-          goal.header.stamp.sec = img_secs;
-          goal.header.stamp.nsec = img_nsecs;
-          goal.goal_id.stamp.sec = img_secs;
-          goal.goal_id.stamp.nsec = img_secs;
-          //goal.goal_id.id = "cube";
-          goal.goal.target_pose.header.stamp.sec = img_secs;
-          goal.goal.target_pose.header.stamp.nsec = img_nsecs;
-          goal.goal.target_pose.header.frame_id = "odom";
-          goal.goal.target_pose.pose.position.z=0;
-          goal.goal.target_pose.pose.position.x = dest_x;
-          goal.goal.target_pose.pose.position.y = dest_y;
-          //double angle = det_yaw+destination_object[6];
-          tf::quaternionTFToMsg(qq,goal.goal.target_pose.pose.orientation);
+          delta_angle = dest_angle-odom_yaw;
+          delta_angle+=(delta_angle>M_PI) ? -M_PI*2 : (delta_angle<-M_PI) ? 2*M_PI : 0;  
+          goal = GenerateGoal(img_secs, img_nsecs, dest_x, dest_y, dest_angle);
         }
         geometry_msgs::PoseStamped gp;
         gp.header = goal.goal.target_pose.header;
@@ -730,20 +717,29 @@ int main( int argc, char** argv )
         debugGoalPosePublisher.publish(gp);
         ros::spinOnce();
 
-      if(fabs(delta_x)<gathering_delta_pos_allowed && fabs(delta_y)<gathering_delta_pos_allowed && fabs(delta_angle)<gathering_delta_angle_allowed)
-      {
-        //Считаем что прибыли в точку назначения, раз куб не захватили, то его и нет
-        state_line<<" finish move, not found, end ";
-        commandPublisher.publish(msg_box_not_taken);
-        ros::spinOnce();
-        currentStateMutex.lock();
-        current_state = STATE_SEARCH;//GATHER_LOST_CUBE
-        currentStateMutex.unlock();
-        geometry_msgs::Twist twist;
-        twistPublisher.publish(twist);  
-        ros::spinOnce();
-        continue;
-      }
+        if(fabs(delta_x)<gathering_delta_pos_allowed && fabs(delta_y)<gathering_delta_pos_allowed && fabs(delta_angle)<gathering_delta_angle_allowed)
+        {
+          //Считаем что прибыли в точку назначения, раз куб не захватили, то его и нет
+          state_line<<" finish move, not found, end ";
+          commandPublisher.publish(msg_box_not_taken);
+          ros::spinOnce();
+          currentStateMutex.lock();
+          current_state = STATE_SEARCH;//GATHER_LOST_CUBE
+          currentStateMutex.unlock(); 
+          if(followMode==followModeMoveBaseGoal)
+          {
+            move_base_msgs::MoveBaseActionGoal goal_reset = GenerateGoal(img_secs, img_nsecs, odom_x, odom_y, odom_yaw);
+            moveBaseGoalPublisher.publish(goal_reset);
+            ros::spinOnce();
+          }
+          else
+          {
+            geometry_msgs::Twist twist;
+            twistPublisher.publish(twist);  
+            ros::spinOnce();
+          }
+          continue;
+        }
 
         if(followMode==followModeMoveBaseGoal)
         {
@@ -836,7 +832,11 @@ int main( int argc, char** argv )
         ros::spinOnce();
       }
     }
-    else if(state==GATHER_LOST_CUBE)
+    else
+    {
+      state_line<<"State: ERROR ";
+    }
+    /*else if(state==GATHER_LOST_CUBE)
     {
       //If distance from desired object>threshold = move to desired object
       //if object reached but cube not touched move forward for x centimeters, and send message @cube lost@
@@ -956,23 +956,20 @@ int main( int argc, char** argv )
       {
         //Задали цель и движемся к ней, тут управлять не надо, наверное?
       }  
-      /*
-      static int counter = 0;
-      counter+=1;
-      if(counter>1000)
-      {
-        counter=0;
-        commandPublisher.publish(msg_box_not_taken);
-        currentStateMutex.lock();
-        current_state = STATE_SEARCH;
-        currentStateMutex.unlock();
-      }
-      */
-    }
-    else
-    {
-      state_line<<"State: ERROR ";
-    }
+      
+      //static int counter = 0;
+      //counter+=1;
+      //if(counter>1000)
+      //{
+      //  counter=0;
+      //  commandPublisher.publish(msg_box_not_taken);
+      //  currentStateMutex.lock();
+      //  current_state = STATE_SEARCH;
+      //  currentStateMutex.unlock();
+      //}
+      
+    }*/
+    
 
     visualization_msgs::MarkerArray cubes_clear;
     for(int i=detections.size()+1; i<10; i++)
@@ -997,6 +994,26 @@ int main( int argc, char** argv )
   }
   cv::destroyWindow("view");
   return 0;
+}
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+move_base_msgs::MoveBaseActionGoal GenerateGoal(int sec, int nsec, double dest_x, double dest_y, double dest_angle)
+{
+  //Формируем цель
+  move_base_msgs::MoveBaseActionGoal goal;
+  goal.header.frame_id = "odom";
+  goal.header.stamp.sec = sec;
+  goal.header.stamp.nsec = nsec;
+  goal.goal_id.stamp.sec = sec;
+  goal.goal_id.stamp.nsec = nsec;
+  goal.goal.target_pose.header.stamp.sec = sec;
+  goal.goal.target_pose.header.stamp.nsec = nsec;
+  goal.goal.target_pose.header.frame_id = "odom";
+  goal.goal.target_pose.pose.position.z=0;
+  goal.goal.target_pose.pose.position.x = dest_x;
+  goal.goal.target_pose.pose.position.y = dest_y;
+  tf::Quaternion qq = tf::createQuaternionFromYaw(dest_angle);
+  tf::quaternionTFToMsg(qq,goal.goal.target_pose.pose.orientation);
+  return goal;
 }
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 visualization_msgs::Marker GenerateMarker( int secs, int nsecs, int id, double x, double y, double scale, float r, float g, float b, float a)
