@@ -698,17 +698,17 @@ int main( int argc, char** argv )
         static double delta_y = 0;
         static double dest_angle = 0;
         static double delta_angle = 0;
+        dest_x = destination_object[4];
+        dest_y = destination_object[5];// + follow_meter_length*sin(odom_yaw);
+        delta_x = dest_x - odom_x;
+        delta_y = dest_y - odom_y;
+        dest_angle = atan2(delta_y, delta_x);
+        dest_x+=follow_meter_length*cos(dest_angle);
+        dest_y+=follow_meter_length*sin(dest_angle);
+        delta_angle = dest_angle-odom_yaw;
+        delta_angle+=(delta_angle>M_PI) ? -M_PI*2 : (delta_angle<-M_PI) ? 2*M_PI : 0; 
         if(detection_received) 
-        {
-          dest_x = destination_object[4];
-          dest_y = destination_object[5];// + follow_meter_length*sin(odom_yaw);
-          delta_x = dest_x - odom_x;
-          delta_y = dest_y - odom_y;
-          dest_angle = atan2(delta_y, delta_x);
-          dest_x+=follow_meter_length*cos(dest_angle);
-          dest_y+=follow_meter_length*sin(dest_angle);
-          delta_angle = dest_angle-odom_yaw;
-          delta_angle+=(delta_angle>M_PI) ? -M_PI*2 : (delta_angle<-M_PI) ? 2*M_PI : 0;  
+        { 
           goal = GenerateGoal(img_secs, img_nsecs, dest_x, dest_y, dest_angle);
         }
         geometry_msgs::PoseStamped gp;
