@@ -12,13 +12,13 @@
 <!--Минимальная угловая скорость платформы, ограничение в целях безопасности-->
         <param name="min_angular_speed" value="0.1"/>
 <!--Множитель конечной угловой скорости, для регуляции радиуса угла доворота на цель-->
-        <param name="angular_speed_multiplier" value="1.0"/>
+        <param name="angular_speed_multiplier" value="0.5"/>
 <!--Максимальная линейная скорость платформы, ограничение в целях безопасности-->
         <param name="max_linear_speed" value="0.5"/>
 <!--Минимальная линейная скорость платформы, ограничение в целях безопасности-->
         <param name="min_linear_speed" value="0.05"/>
 <!--Множитель конечной линейной скорости для регуляции скорости-->
-        <param name="linear_speed_multiplier" value="0.5"/>
+        <param name="linear_speed_multiplier" value="0.25"/>
 
 <!-- То есть два кадра подряд надо найти объект рядом чтобы писать сообщениe -->
         <param name="minimalTrajectoryLen" value="2"/>

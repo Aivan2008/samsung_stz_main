@@ -609,9 +609,15 @@ int main( int argc, char** argv )
                 currentStateMutex.lock();
                 current_state = STATE_SEARCH;
                 currentStateMutex.unlock();
-                geometry_msgs::Twist twist;
-                twistPublisher.publish(twist);  
-                ros::spinOnce();
+                if(followMode==followModeControlByCoord)
+                { 
+                  geometry_msgs::Twist twist;
+                  twistPublisher.publish(twist);  
+                  ros::spinOnce();
+                }
+                else
+                _
+                
               }
             }
           }
@@ -634,8 +640,8 @@ int main( int argc, char** argv )
         }
       }
                               
-
-      if(destination_object.size()>0)
+      static move_base_msgs::MoveBaseActionGoal goal = move_base_msgs::MoveBaseActionGoal();
+      if(destination_object.size()>0 )
       {
       
         //Если предыдущее положение было в зоне захвата, то перейти в режим доезжания, иначе продолжить движение по алгоритму
@@ -656,8 +662,53 @@ int main( int argc, char** argv )
           double next_y = odom_y + follow_meter_length*sin(odom_yaw);
       
           tf::Quaternion qq = tf::createQuaternionFromYaw(odom_yaw);
+          move_base_msgs::MoveBaseActionGoal goal2;
+          goal2.header.frame_id = "odom";
+          goal2.header.stamp.sec = img_secs;
+          goal2.header.stamp.nsec = img_nsecs;
+          goal2.goal_id.stamp.sec = img_secs;
+          goal2.goal_id.stamp.nsec = img_secs;
+          //goal.goal_id.id = "cube";
+          goal2.goal.target_pose.header.stamp.sec = img_secs;
+          goal2.goal.target_pose.header.stamp.nsec = img_nsecs;
+          goal2.goal.target_pose.header.frame_id = "odom";
+          goal2.goal.target_pose.pose.position.z=0;
+          goal2.goal.target_pose.pose.position.x = next_x;
+          goal2.goal.target_pose.pose.position.y = next_y;
+          //double angle = det_yaw+destination_object[6];
+          tf::quaternionTFToMsg(qq,goal.goal.target_pose.pose.orientation);
+          //gathering_goal = goal2;
 
-          move_base_msgs::MoveBaseActionGoal goal;
+          //currentStateMutex.lock();
+          //current_state = GATHER_LOST_CUBE;
+          //currentStateMutex.unlock(); 
+        }
+    
+        state_line<<", Destination exists ";
+        //cv::rectangle(debug_img, cv::Point2f(destination_object[0], destination_object[1]), 
+        //                cv::Point2f(destination_object[2],destination_object[3]), cv::Scalar(0,255,0), 2)
+    
+        //Рассчитываем дельту и угол
+        static double dest_x = 0;
+        static double dest_y = 0;
+        static double delta_x = 0;
+        static double delta_y = 0;
+        static double dest_angle = 0;
+        static double delta_angle = 0;
+        if(detection_received) 
+        {
+          dest_x = destination_object[4];
+          dest_y = destination_object[5];// + follow_meter_length*sin(odom_yaw);
+          delta_x = dest_x - odom_x;
+          delta_y = dest_y - odom_y;
+          dest_angle = atan2(delta_y, delta_x);
+          delta_angle = dest_angle-odom_yaw;
+          delta_angle+=(delta_angle>M_PI) ? -M_PI*2 : (delta_angle<-M_PI) ? 2*M_PI : 0;  
+          tf::Quaternion qq = tf::createQuaternionFromYaw(dest_angle);
+          dest_x+=follow_meter_length*cos(dest_angle);
+          dest_y+=follow_meter_length*sin(dest_angle);
+          //Формируем цель
+          //move_base_msgs::MoveBaseActionGoal goal;
           goal.header.frame_id = "odom";
           goal.header.stamp.sec = img_secs;
           goal.header.stamp.nsec = img_nsecs;
@@ -668,56 +719,16 @@ int main( int argc, char** argv )
           goal.goal.target_pose.header.stamp.nsec = img_nsecs;
           goal.goal.target_pose.header.frame_id = "odom";
           goal.goal.target_pose.pose.position.z=0;
-          goal.goal.target_pose.pose.position.x = next_x;
-          goal.goal.target_pose.pose.position.y = next_y;
+          goal.goal.target_pose.pose.position.x = dest_x;
+          goal.goal.target_pose.pose.position.y = dest_y;
           //double angle = det_yaw+destination_object[6];
           tf::quaternionTFToMsg(qq,goal.goal.target_pose.pose.orientation);
-          //gathering_goal = goal;
-
-          currentStateMutex.lock();
-          //current_state = GATHER_LOST_CUBE;
-          currentStateMutex.unlock(); 
         }
-    
-        state_line<<", Destination exists ";
-        //cv::rectangle(debug_img, cv::Point2f(destination_object[0], destination_object[1]), 
-        //                cv::Point2f(destination_object[2],destination_object[3]), cv::Scalar(0,255,0), 2)
-    
-        //Рассчитываем дельту и угол
-        double dest_x = destination_object[4];
-        double dest_y = destination_object[5];// + follow_meter_length*sin(odom_yaw);
-        double delta_x = dest_x - odom_x;
-        double delta_y = dest_y - odom_y;
-        double dest_angle = atan2(delta_y, delta_x);
-        tf::Quaternion qq = tf::createQuaternionFromYaw(dest_angle);
-        dest_x+=follow_meter_length*cos(dest_angle);
-        dest_y+=follow_meter_length*sin(dest_angle);
-         //Формируем цель
-        move_base_msgs::MoveBaseActionGoal goal;
-        goal.header.frame_id = "odom";
-        goal.header.stamp.sec = img_secs;
-        goal.header.stamp.nsec = img_nsecs;
-        goal.goal_id.stamp.sec = img_secs;
-        goal.goal_id.stamp.nsec = img_secs;
-        //goal.goal_id.id = "cube";
-        goal.goal.target_pose.header.stamp.sec = img_secs;
-        goal.goal.target_pose.header.stamp.nsec = img_nsecs;
-        goal.goal.target_pose.header.frame_id = "odom";
-        goal.goal.target_pose.pose.position.z=0;
-        goal.goal.target_pose.pose.position.x = dest_x;
-        goal.goal.target_pose.pose.position.y = dest_y;
-        //double angle = det_yaw+destination_object[6];
-        tf::quaternionTFToMsg(qq,goal.goal.target_pose.pose.orientation);
         geometry_msgs::PoseStamped gp;
         gp.header = goal.goal.target_pose.header;
         gp.pose = goal.goal.target_pose.pose;
         debugGoalPosePublisher.publish(gp);
         ros::spinOnce();
-
-
-        double delta_angle = dest_angle-odom_yaw;
-        delta_angle+=(delta_angle>M_PI) ? -M_PI*2 : (delta_angle<-M_PI) ? 2*M_PI : 0;       
-
 
       if(fabs(delta_x)<gathering_delta_pos_allowed && fabs(delta_y)<gathering_delta_pos_allowed && fabs(delta_angle)<gathering_delta_angle_allowed)
       {
@@ -741,11 +752,11 @@ int main( int argc, char** argv )
           if(move==1)
           {
             int da_sign = (delta_angle>0)?(1):(-1);
-            if(fabs(delta_angle)>M_PI/9)
+            if(fabs(delta_angle)>M_PI/18)
             {
               //ЗАметка: Если объект в задней полусфере, надо сначала отдавать команды только на поворот, а когда будет острый угол хотя бы
               //тогда уже и по положению управлять
-              std::cout<<"ROTAAATE!!!\n";
+              //std::cout<<"ROTAAATE!!!\n";
               geometry_msgs::Twist twist;
               twist.angular.z = da_sign*std::min<double>(max_angular_speed, fabs(delta_angle))*angular_speed_multiplier;
               twistPublisher.publish(twist);  
