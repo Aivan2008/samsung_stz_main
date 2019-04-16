@@ -93,9 +93,9 @@ void imageCallback(const sensor_msgs::CompressedImageConstPtr& msg);
 //Коллбэк на прием рамок кубов
 void detectorCallback(const object_detection_msgs::DetectorResultConstPtr& msg);
 //Прием данных от одометрии
-void OdomCallback(const nav_msgs::Odometry::ConstPtr& msg);
+void odomCallback(const nav_msgs::Odometry::ConstPtr& msg);
 //Прием данных командного топика
-void CommandCallback(const std_msgs::String::ConstPtr& msg);
+void commandCallback(const std_msgs::String::ConstPtr& msg);
 //Прием данных от захвата
 void grappleCallback(const std_msgs::Bool::ConstPtr& msg);
 /////////////////////////////////////////////////////////////////////////
@@ -108,6 +108,10 @@ void calcBoxPosition(double u, double v, double mod, double &X, double&Z, double
 visualization_msgs::Marker GenerateMarker( int secs, int nsecs, int id, double x, double y, double scale, float r, float g, float b, float a);
 //
 move_base_msgs::MoveBaseActionGoal GenerateGoal(int sec, int nsec, double dest_x, double dest_y, double dest_angle);
+//
+std::string GetCubeId();
+//
+void IncrementCubeId();
 /////////////////////////////////////////////////////////////////////////
 // _____        _        
 //|  __ \      | |       
@@ -169,6 +173,11 @@ int current_state = 0;
 ros::NodeHandle* nh;
 ros::NodeHandle* nh_p;
 /////////////////////////////////////////////////////////////////////////
+//Контроль доступа, строковый и текстовый ID текущего куба к которому посылаем цель
+std::mutex cubeIdMutex;
+int cube_id_index=0;
+std::string cube_id;
+/////////////////////////////////////////////////////////////////////////
 // __  __       _       
 //|  \/  |     (_)      
 //| \  / | __ _ _ _ __  
@@ -189,13 +198,15 @@ int main( int argc, char** argv )
   std_msgs::String msg_box_detected = std_msgs::String();
   std_msgs::String msg_box_taken = std_msgs::String();
   std_msgs::String msg_box_not_taken = std_msgs::String();
-  msg_box_detected.data = std::string("GATHER_CUBE");
+  msg_box_detected.data = std::string("CUBE_DETECTED");
   msg_box_taken.data = std::string("CUBE_TAKEN");
   msg_box_not_taken.data = std::string("CUBE_NOT_TAKEN");
   //Создать паблишеров и сабскрайберов
   ros::Subscriber sub_image = nh->subscribe("/usb_cam_front/image_raw/compressed", 1, imageCallback);
   ros::Subscriber sub_detector_res = nh->subscribe("/samsung/BBoxes", 1, detectorCallback);
-  ros::Subscriber sub_odom = nh->subscribe("/kursant_driver/odom", 1, OdomCallback);
+  ros::Subscriber sub_odom = nh->subscribe("/kursant_driver/odom", 1, odomCallback);
+  ros::Subscriber sub_grapple = nh->subscribe("/box_sensor/is_sensed", 1, grappleCallback);
+  ros::Subscriber sub_command = nh->subscribe("/kursant_driver/command", 1, commandCallback);
   ros::Publisher twistPublisher = nh->advertise<geometry_msgs::Twist>("/kursant_driver/cmd_vel", 100);
   ros::Publisher commandPublisher = nh->advertise<std_msgs::String>("/kursant_driver/command", 100);
   ros::Publisher cubesPublisher = nh->advertise<visualization_msgs::MarkerArray>("/samsung/cube_positions", 20);
@@ -486,11 +497,11 @@ int main( int argc, char** argv )
                   previousDesiredObjectPosition = currentDesiredObjectPosition;
                   cv::rectangle(debug_img, cv::Point2f(currentDesiredObjectPosition[0], currentDesiredObjectPosition[1]), cv::Point2f(currentDesiredObjectPosition[2],currentDesiredObjectPosition[3]), cv::Scalar(255,255,255), 2);
                   lost_counter=0;
-                  currentStateMutex.lock();
-                  current_state = FOLLOW_CUBE;
-                  state_line<<" RESET GOAL "<<"\n";
-                  reset_goal = true;
-                  currentStateMutex.unlock();
+                  //currentStateMutex.lock();
+                  //current_state = FOLLOW_CUBE;
+                  //state_line<<" RESET GOAL "<<"\n";
+                  //reset_goal = true;
+                  //currentStateMutex.unlock();
                   visualization_msgs::Marker cb = GenerateMarker(img_secs,img_nsecs, detections.size()+1, previousDesiredObjectPosition[4], previousDesiredObjectPosition[5], 0.11, 1.0, 1.0, 1.0, 0.9);
                   cubes.markers.push_back(cb);
               }
@@ -762,23 +773,33 @@ int main( int argc, char** argv )
         {
           int move = 0;
           nh->getParam("/samsung_stz_main/move", move);
-          if(move==1)
-          {
+          //if(move==1)
+          //{
             int da_sign = (delta_angle>0)?(1):(-1);
+            static bool clear_vel = false;
             if(fabs(delta_angle)>M_PI/18)
             {
               //ЗАметка: Если объект в задней полусфере, надо сначала отдавать команды только на поворот, а когда будет острый угол хотя бы
               //тогда уже и по положению управлять
-              //std::cout<<"ROTAAATE!!!\n";
+              
               geometry_msgs::Twist twist;
               twist.angular.z = da_sign*std::min<double>(max_angular_speed, fabs(delta_angle))*angular_speed_multiplier;
+              std::cout<<"Rotate: "<< twist.angular.z <<"\n";
               twistPublisher.publish(twist);  
               ros::spinOnce();
+              clear_vel = true;
             }  
             else
             {
              // if(reset_goal == true)
               //{
+                if(clear_vel)
+                {
+                  geometry_msgs::Twist twist;
+                  twistPublisher.publish(twist);  
+                  ros::spinOnce();
+                }
+                clear_vel = false;
                 state_line<<" SEND_GOAL "<<"\n";
                 reset_goal=false;
                 moveBaseGoalPublisher.publish(goal);
@@ -789,7 +810,7 @@ int main( int argc, char** argv )
               //  state_line<<" GOAL ALREADY SENT "<<"\n";
               //}
             }
-          }
+          //}
         }
         else
         {
@@ -1033,7 +1054,7 @@ move_base_msgs::MoveBaseActionGoal GenerateGoal(int sec, int nsec, double dest_x
   goal.header.stamp.nsec = nsec;
   goal.goal_id.stamp.sec = sec;
   goal.goal_id.stamp.nsec = nsec;
-  goal.goal_id.id = "cube";
+  goal.goal_id.id = GetCubeId();
   goal.goal.target_pose.header.stamp.sec = sec;
   goal.goal.target_pose.header.stamp.nsec = nsec;
   goal.goal.target_pose.header.frame_id = "odom";
@@ -1231,7 +1252,7 @@ void detectorCallback(const object_detection_msgs::DetectorResultConstPtr& msg)
     }
 }
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-void OdomCallback(const nav_msgs::Odometry::ConstPtr& msg)
+void odomCallback(const nav_msgs::Odometry::ConstPtr& msg)
 {
 	std::lock_guard<std::mutex> odom_guard(odometryDataMutex);
 	odometryX = msg->pose.pose.position.x;
@@ -1243,13 +1264,14 @@ void OdomCallback(const nav_msgs::Odometry::ConstPtr& msg)
   odometryTimeStamp = msg->header.stamp.sec+static_cast<double>(msg->header.stamp.nsec)/1000000000;
 }
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-void CommandCallback(const std_msgs::String::ConstPtr& msg)
+void commandCallback(const std_msgs::String::ConstPtr& msg)
 {
   ros::Publisher tp = nh->advertise<geometry_msgs::Twist>("/state_machine/cmd_vel", 100);
   std::lock_guard<std::mutex> cmd_guard(currentStateMutex);
   if(msg->data==std::string("GATHER_CUBE") && current_state == STATE_SEARCH)
   {
     current_state = FOLLOW_CUBE;
+    IncrementCubeId();
   }
 
   if(msg->data==std::string("STOP_GATHER"))
@@ -1280,4 +1302,25 @@ void grappleCallback(const std_msgs::Bool::ConstPtr& msg)
   grappleStateMutex.lock();
   grappleHoldCube = msg->data;
   grappleStateMutex.unlock();
+}
+//
+/*
+std::mutex cubeIdMutex;
+int cube_id_index=0;
+std::string cube_id;
+*/
+std::string GetCubeId()
+{
+  cubeIdMutex.lock();
+  std::stringstream ss;
+  ss<<"cube_"<<cube_id_index;
+  cubeIdMutex.unlock();
+  return ss.str();
+}
+//
+void IncrementCubeId()
+{
+  cubeIdMutex.lock();
+  cube_id_index+=1;
+  cubeIdMutex.unlock();
 }

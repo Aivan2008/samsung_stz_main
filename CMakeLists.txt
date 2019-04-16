@@ -17,6 +17,7 @@ find_package(catkin REQUIRED COMPONENTS
   geometry_msgs
   message_generation
   move_base_msgs
+  actionlib
   object_detection_msgs
   pcl_ros
 )
