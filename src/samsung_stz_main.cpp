@@ -22,6 +22,8 @@
 #include "std_msgs/String.h"
 #include "std_msgs/Bool.h"
 #include "nav_msgs/Odometry.h"
+#include "actionlib_msgs/GoalStatusArray.h"
+#include "geometry_msgs/Point.h"
 #include <tf/transform_datatypes.h>
 #include <visualization_msgs/Marker.h>
 #include <visualization_msgs/MarkerArray.h>
@@ -50,6 +52,8 @@ float angular_speed_multiplier = 0.5f;
 float max_linear_speed = 0.8f;
 float min_linear_speed = 0.05f;
 float linear_speed_multiplier = 0.5f;
+//Радиус точки сброса в метрах
+float drop_point_radius = 0.5; //Квадрат со стороной в метр
 /////////////////////////////////////////////////////////////////////////
 //TRACKING PARAMETERS
 //То есть два кадра подряд надо найти объект рядом чтобы писать сообщения
@@ -98,6 +102,10 @@ void odomCallback(const nav_msgs::Odometry::ConstPtr& msg);
 void commandCallback(const std_msgs::String::ConstPtr& msg);
 //Прием данных от захвата
 void grappleCallback(const std_msgs::Bool::ConstPtr& msg);
+//Позиция точки сброса
+void dropPointPositionCallback(const geometry_msgs::Point::ConstPtr& msg);
+//Прием статусов целей
+void moveBaseStatusCallback(const actionlib_msgs::GoalStatusArray::ConstPtr& msg);
 /////////////////////////////////////////////////////////////////////////
 //FUNCTIONS
 void initParams(ros::NodeHandle* nh_p);
@@ -178,6 +186,19 @@ std::mutex cubeIdMutex;
 int cube_id_index=0;
 std::string cube_id;
 /////////////////////////////////////////////////////////////////////////
+//Контроль доступа, строковый и текстовый ID текущего куба к которому посылаем цель
+std::mutex goalStatusMutex;
+const int goalStatusUnknown = -1;
+const int goalStatusActive = 1;
+const int goalStatusSucceeded = 3;
+const int goalStatusPending = 0;
+int curr_goal_status=goalStatusUnknown;
+/////////////////////////////////////////////////////////////////////////
+//ТОЧКА СБРОСА КУБОВ
+std::mutex dropPointPositionMutex;
+float drop_point_x = 0.0f;
+float drop_point_y = 0.0f;
+/////////////////////////////////////////////////////////////////////////
 // __  __       _       
 //|  \/  |     (_)      
 //| \  / | __ _ _ _ __  
@@ -195,23 +216,28 @@ int main( int argc, char** argv )
   nh = new ros::NodeHandle();
   nh_p = new ros::NodeHandle("~");
   // Сообщения для командного топика
-  std_msgs::String msg_box_detected = std_msgs::String();
+  //std_msgs::String msg_box_detected = std_msgs::String();
   std_msgs::String msg_box_taken = std_msgs::String();
   std_msgs::String msg_box_not_taken = std_msgs::String();
-  msg_box_detected.data = std::string("CUBE_DETECTED");
+  //msg_box_detected.data = std::string("CUBE_DETECTED");
+  //msg_box_lost.data = std::string("CUBE_LOST");
   msg_box_taken.data = std::string("CUBE_TAKEN");
   msg_box_not_taken.data = std::string("CUBE_NOT_TAKEN");
-  //Создать паблишеров и сабскрайберов
+  //Создать паблишеров и сабскрайберов 
   ros::Subscriber sub_image = nh->subscribe("/usb_cam_front/image_raw/compressed", 1, imageCallback);
   ros::Subscriber sub_detector_res = nh->subscribe("/samsung/BBoxes", 1, detectorCallback);
   ros::Subscriber sub_odom = nh->subscribe("/kursant_driver/odom", 1, odomCallback);
   ros::Subscriber sub_grapple = nh->subscribe("/box_sensor/is_sensed", 1, grappleCallback);
   ros::Subscriber sub_command = nh->subscribe("/kursant_driver/command", 1, commandCallback);
+  ros::Subscriber sub_move_base_status = nh->subscribe("/move_base/status", 1, commandCallback);
+  ros::Subscriber sub_drop_point_pos = nh->subscribe("/samsung/drop_point", 1, dropPointPositionCallback);
   ros::Publisher twistPublisher = nh->advertise<geometry_msgs::Twist>("/kursant_driver/cmd_vel", 100);
   ros::Publisher commandPublisher = nh->advertise<std_msgs::String>("/kursant_driver/command", 100);
   ros::Publisher cubesPublisher = nh->advertise<visualization_msgs::MarkerArray>("/samsung/cube_positions", 20);
+  ros::Publisher homeAreaPublisher = nh->advertise<visualization_msgs::Marker>("/samsung/home_area", 20);
   ros::Publisher moveBaseGoalPublisher = nh->advertise<move_base_msgs::MoveBaseActionGoal>("/move_base/goal", 20);//
   ros::Publisher debugGoalPosePublisher = nh->advertise<geometry_msgs::PoseStamped>("/samsung/goal_pose", 20);
+  ros::Publisher cubeDetectedPublisher = nh->advertise<std_msgs::Bool>("/samsung_stz_main/cube_detected", 20);
   image_transport::ImageTransport it(*nh);
   image_transport::Publisher debugImagePublisher = it.advertise("/samsung_stz_main/debug_image", 1);
   //Служебный параметр для отключения отправки движения/цели при отладке
@@ -287,8 +313,7 @@ int main( int argc, char** argv )
     det_y = detectionRobotY;
     det_yaw = detectionRobotYaw;
     detectionDataMutex.unlock();
-    
-  
+    ///////////////////////////////
     double odom_x=0;
     double odom_y=0;
     double odom_yaw=0;
@@ -299,8 +324,12 @@ int main( int argc, char** argv )
     odom_yaw = odometryYaw;
     odom_stamp = odometryTimeStamp;
     odometryDataMutex.unlock();
-    
-
+    ///////////////////////////////
+    dropPointPositionMutex.lock();
+    float drop_pt_x = drop_point_x;
+    float drop_pt_y = drop_point_y;
+    dropPointPositionMutex.unlock();
+    ///////////////////////////////
     //Расчет разницы по времени между детекцией и текущим кадром
     //delta_img_det = image_tstamp - detector_tstamp;
     ///////////////////////////////
@@ -324,6 +353,30 @@ int main( int argc, char** argv )
     std::vector<double> desired_rect;
 
     bool detection_received = false;
+
+    float min_map_x = drop_point_x - drop_point_radius;
+    float max_map_x = drop_point_x + drop_point_radius;
+    float min_map_y = drop_point_y - drop_point_radius;
+    float max_map_y = drop_point_y + drop_point_radius;
+
+    visualization_msgs::Marker home_marker;
+    home_marker.header.frame_id = "odom";
+    home_marker.header.stamp.sec = img_secs;
+    home_marker.header.stamp.nsec = img_nsecs;
+    home_marker.ns = "home_point";
+    home_marker.id = 0;
+    home_marker.type = 1;//CUBE
+    home_marker.pose.position.x = drop_pt_x;
+    home_marker.pose.position.y = drop_pt_y;
+    home_marker.scale.x = drop_point_radius*2.0;
+    home_marker.scale.y = drop_point_radius*2.0;
+    home_marker.scale.z = 0.2;
+    home_marker.color.r = 0;
+    home_marker.color.g = 1;
+    home_marker.color.b = 0;
+    home_marker.color.a = 0.5;
+    homeAreaPublisher.publish(home_marker);
+
     if(detections.size()>0)
     {
         //Расчет пространственных координат куба для каждого прямоугольника
@@ -337,6 +390,7 @@ int main( int argc, char** argv )
             float xmax = detections[i][2];
             float ymax = detections[i][3];
             float conf = detections[i][4];
+
 
   
             if(ymin>minimal_y && conf>minimal_conf)
@@ -368,14 +422,17 @@ int main( int argc, char** argv )
               //r[3] = map_x;
               //r[4] = map_y;
               
-              det[0] = xmin;
-              det[1] = ymin;
-              det[2] = xmax;
-              det[3] = ymax;
-              det[4] = map_x;
-              det[5] = map_y;
-              det[6] = A;
-              current_detections.push_back(det);
+              if ((map_x>min_map_x)&&(map_x<max_map_x)&&(map_y>min_map_y)&&(map_y<max_map_y))
+              {
+                det[0] = xmin;
+                det[1] = ymin;
+                det[2] = xmax;
+                det[3] = ymax;
+                det[4] = map_x;
+                det[5] = map_y;
+                det[6] = A;
+                current_detections.push_back(det);
+              }
             }
         }
         detection_received = current_detections.size()>0;
@@ -483,65 +540,128 @@ int main( int argc, char** argv )
 
     bool print_line = false;
     static bool reset_goal = false;
+  
+
+//    ____ _____  _  _____ _____   __  __    _    ____ _   _ ___ _   _ _____ 
+//   / ___|_   _|/ \|_   _| ____| |  \/  |  / \  / ___| | | |_ _| \ | | ____|
+//   \___ \ | | / _ \ | | |  _|   | |\/| | / _ \| |   | |_| || ||  \| |  _|  
+//    ___) || |/ ___ \| | | |___  | |  | |/ ___ \ |___|  _  || || |\  | |___ 
+//   |____/ |_/_/   \_\_| |_____| |_|  |_/_/   \_\____|_| |_|___|_| \_|_____|
+
     if(state == STATE_SEARCH)
     {
-          state_line<<"State: search, ";
-          //We found confident object, send message
-          if(detection_received)
-          {
-              if(detectedConfidentObject)
+      
+      state_line<<"State: search, ";
+      if(grapple_hold_cube)
+      {
+        print_line = true;
+        state_line<<"cube already grappled ";
+        //currentStateMutex.lock();
+        //current_state = STATE_SEARCH;
+        //currentStateMutex.unlock(); 
+        //commandPublisher.publish(msg_box_taken);
+      }
+      else
+      {
+        static bool cube_detected_prev = false;
+        //We found confident object, send message
+        if(detection_received)
+        {
+            if(detectedConfidentObject)
+            {
+                print_line = true;
+                state_line<<"Pub command ";
+                /////////////////// CHECK IT!!
+                //if(desiredObjectTrajectoryLength==2)
+                //{
+                //  commandPublisher.publish(msg_box_detected);
+                //  ros::spinOnce();
+                //}
+                cube_detected_prev = true;
+                /////////////////// CHECK IT!!
+                previousDesiredObjectPosition = currentDesiredObjectPosition;
+                cv::rectangle(debug_img, cv::Point2f(currentDesiredObjectPosition[0], currentDesiredObjectPosition[1]), cv::Point2f(currentDesiredObjectPosition[2],currentDesiredObjectPosition[3]), cv::Scalar(255,255,255), 2);
+                //currentStateMutex.lock();
+                //current_state = FOLLOW_CUBE;
+                //state_line<<" RESET GOAL "<<"\n";
+                //reset_goal = true;
+                //currentStateMutex.unlock();
+                visualization_msgs::Marker cb = GenerateMarker(img_secs,img_nsecs, detections.size()+1, previousDesiredObjectPosition[4], previousDesiredObjectPosition[5], 0.11, 1.0, 1.0, 1.0, 0.9);
+                cubes.markers.push_back(cb);
+                
+            }
+            else
+            {
+              //We have lost object or had no-one, but now found a new one, switch to it then
+              if(currentDesiredObjectPosition.size()>0)
               {
-                  print_line = true;
-                  state_line<<"Pub command ";
-                  commandPublisher.publish(msg_box_detected);
-                  previousDesiredObjectPosition = currentDesiredObjectPosition;
-                  cv::rectangle(debug_img, cv::Point2f(currentDesiredObjectPosition[0], currentDesiredObjectPosition[1]), cv::Point2f(currentDesiredObjectPosition[2],currentDesiredObjectPosition[3]), cv::Scalar(255,255,255), 2);
+                  state_line<<"Update object ";
                   lost_counter=0;
-                  //currentStateMutex.lock();
-                  //current_state = FOLLOW_CUBE;
-                  //state_line<<" RESET GOAL "<<"\n";
-                  //reset_goal = true;
-                  //currentStateMutex.unlock();
-                  visualization_msgs::Marker cb = GenerateMarker(img_secs,img_nsecs, detections.size()+1, previousDesiredObjectPosition[4], previousDesiredObjectPosition[5], 0.11, 1.0, 1.0, 1.0, 0.9);
+                  previousDesiredObjectPosition = currentDesiredObjectPosition;
+                  cv::rectangle(debug_img, cv::Point2f(currentDesiredObjectPosition[0], currentDesiredObjectPosition[1]), 
+                                cv::Point2f(currentDesiredObjectPosition[2],currentDesiredObjectPosition[3]), cv::Scalar(100,100,100), 2);
+                  visualization_msgs::Marker cb = GenerateMarker(img_secs,img_nsecs,detections.size()+1, previousDesiredObjectPosition[4], previousDesiredObjectPosition[5], 0.11, 0.5, 0.5, 0.5, 0.9);
                   cubes.markers.push_back(cb);
+                  cube_detected_prev = true;
               }
               else
               {
-                //We have lost object or had no-one, but now found a new one, switch to it then
-                if(currentDesiredObjectPosition.size()>0)
-                {
-                    state_line<<"Update object ";
-                    previousDesiredObjectPosition = currentDesiredObjectPosition;
-                    cv::rectangle(debug_img, cv::Point2f(currentDesiredObjectPosition[0], currentDesiredObjectPosition[1]), 
-                                  cv::Point2f(currentDesiredObjectPosition[2],currentDesiredObjectPosition[3]), cv::Scalar(255,255,255), 2);
-                    visualization_msgs::Marker cb = GenerateMarker(img_secs,img_nsecs,detections.size()+1, previousDesiredObjectPosition[4], previousDesiredObjectPosition[5], 0.11, 0.5, 1.0, 1.0, 0.9);
+                  if(new_object_found)
+                  {
+                    print_line = true;
+                    state_line<<"Reset object ";
+                    previousDesiredObjectPosition = desired_rect;
+                    desiredObjectTrajectoryLength = 1;
+                    lost_counter=0;
+                    visualization_msgs::Marker cb = GenerateMarker(img_secs, img_nsecs, detections.size()+1,previousDesiredObjectPosition[4],previousDesiredObjectPosition[5],0.11, 1.0,1.0,1.0, 0.9);
                     cubes.markers.push_back(cb);
-                }
-                else
-                {
-                    if(new_object_found)
+                    cube_detected_prev = false;
+                  }
+                  else //We lost an object and have no new one, as we do not move to it, drop it
+                  {
+                    print_line = true;
+                    state_line<<"Delete object\n";
+                    lost_counter+=1;
+                    /*if(cube_detected_prev == true)
                     {
-                      print_line = true;
-                      state_line<<"Reset object ";
-                      previousDesiredObjectPosition = desired_rect;
-                      desiredObjectTrajectoryLength = 1;
-                      visualization_msgs::Marker cb = GenerateMarker(img_secs, img_nsecs, detections.size()+1,previousDesiredObjectPosition[4],previousDesiredObjectPosition[5],0.11, 1.0,1.0,1.0, 0.9);
-                      cubes.markers.push_back(cb);
-                    }
-                    else //We lost an object and have no new one, as we do not move to it, drop it
-                    {
-                      print_line = true;
-                      state_line<<"Delete object\n";
-                      previousDesiredObjectPosition.clear();
-                    }
-                }
+                      commandPublisher.publish(msg_box_lost);
+                      ros::spinOnce();
+                    }*/
+                    previousDesiredObjectPosition.clear();
+                    cube_detected_prev = false;
+                  }
               }
-           }
-           else
-           {
-              print_line = true;
-              state_line<<"no new object ";
-           }
+            }
+         }
+         else
+         {
+            if(previousDesiredObjectPosition.size()>0)
+            {
+              //Показываем вслепую
+              //lost_counter+=1;
+              //if(cube_detected_prev == true)
+              state_line<<"no frame, use last position ";
+              cv::rectangle(debug_img, cv::Point2f(previousDesiredObjectPosition[0], previousDesiredObjectPosition[1]), 
+                      cv::Point2f(previousDesiredObjectPosition[2],previousDesiredObjectPosition[3]), cv::Scalar(100, 100, 100), 2);
+              visualization_msgs::Marker cb = GenerateMarker( img_secs, img_nsecs, detections.size()+1, previousDesiredObjectPosition[4], previousDesiredObjectPosition[5], 0.11, 0.5, 0.5, 0.5, 0.9);
+              cubes.markers.push_back(cb);
+            }
+            else
+            {
+              /*if(cube_detected_prev == true)
+              {
+                commandPublisher.publish(msg_box_lost);
+                ros::spinOnce();
+              }*/
+              cube_detected_prev = false;
+            }
+         }
+          std_msgs::Bool detected;
+          detected.data = cube_detected_prev;
+          cubeDetectedPublisher.publish(detected);
+          ros::spinOnce();
+      }
+      
     }
     else if(state==FOLLOW_CUBE)
     {
@@ -557,6 +677,7 @@ int main( int argc, char** argv )
         commandPublisher.publish(msg_box_taken);
         if(followMode==followModeMoveBaseGoal)
         {
+          //Эта штука не работает, или работает не так, надо отменить текущую цель
           move_base_msgs::MoveBaseActionGoal goal_reset = GenerateGoal(img_secs, img_nsecs, odom_x, odom_y, odom_yaw);
           moveBaseGoalPublisher.publish(goal_reset);
           ros::spinOnce();
@@ -684,7 +805,6 @@ int main( int argc, char** argv )
                   cv::Point2f(previousDesiredObjectPosition[2],previousDesiredObjectPosition[3]), last_color, 2);
           visualization_msgs::Marker cb = GenerateMarker( img_secs, img_nsecs, detections.size()+1, previousDesiredObjectPosition[4], previousDesiredObjectPosition[5], 0.11, 0.0, 1.0, 0.0, 0.9);
           cubes.markers.push_back(cb);
-
         }
       }
                               
@@ -704,13 +824,13 @@ int main( int argc, char** argv )
         }       
 
         //Переключение состояния по нижней границе
-        if((xmin>desired_area_left) && (xmax<desired_area_right) && (ymax>=(desired_y)))
+        /*if((xmin>desired_area_left) && (xmax<desired_area_right) && (ymax>=(desired_y)))
         {
           double next_x = odom_x + follow_meter_length*cos(odom_yaw);
           double next_y = odom_y + follow_meter_length*sin(odom_yaw);
 
           move_base_msgs::MoveBaseActionGoal goal2 = GenerateGoal(img_secs, img_nsecs, next_x, next_y, odom_yaw);
-        }
+        }*/
     
         state_line<<", Destination exists ";
         //cv::rectangle(debug_img, cv::Point2f(destination_object[0], destination_object[1]), 
@@ -771,6 +891,11 @@ int main( int argc, char** argv )
 
         if(followMode==followModeMoveBaseGoal)
         {
+          //Мы НЕ прибыли в точку назначения, как проверено выше, но цель завершена! Обновим ее.
+          if(curr_goal_status==goalStatusSucceeded)
+          {
+            IncrementCubeId();
+          }
           int move = 0;
           nh->getParam("/samsung_stz_main/move", move);
           //if(move==1)
@@ -1302,6 +1427,42 @@ void grappleCallback(const std_msgs::Bool::ConstPtr& msg)
   grappleStateMutex.lock();
   grappleHoldCube = msg->data;
   grappleStateMutex.unlock();
+}
+/*
+std::mutex goalStatusMutex;
+const int goalStatusUnknown = -1;
+const int goalStatusActive = 1;
+const int goalStatusSucceeded = 3;
+const int goalStatusPending = 0;
+int curr_goal_status=goalStatusUnknown;
+*/
+void moveBaseStatusCallback(const actionlib_msgs::GoalStatusArray::ConstPtr& msg)
+{
+  std::string currGoalId = GetCubeId();
+  goalStatusMutex.lock();
+  int status = goalStatusUnknown;
+  for(int i=0; i<msg->status_list.size(); i++)
+  {
+    if(msg->status_list[i].goal_id.id==currGoalId)
+    {
+      status = msg->status_list[i].status;
+      break;
+    }
+  }
+  goalStatusMutex.unlock();
+}
+//Позиция точки сброса
+/*
+std::mutex dropPointPositionMutex;
+float drop_point_x = 0.0f;
+float drop_point_y = 0.0f;
+*/
+void dropPointPositionCallback(const geometry_msgs::Point::ConstPtr& msg)
+{
+  dropPointPositionMutex.lock();
+  drop_point_x = msg->x;
+  drop_point_y = msg->y;
+  dropPointPositionMutex.unlock();
 }
 //
 /*
