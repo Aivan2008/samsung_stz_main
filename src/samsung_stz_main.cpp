@@ -284,7 +284,7 @@ int main( int argc, char** argv )
 //         __/ |            
 //        |___/             
 /////////////////////////////////////////////////////////////////////////////////////
-  ros::Rate loop_rate(10);
+  ros::Rate loop_rate(100);
   while(ros::ok())
   {
     //Считать параметры на случай если они изменились
@@ -584,7 +584,7 @@ int main( int argc, char** argv )
 
     if(state == STATE_SEARCH)
     {
-      
+      goalReachedAfterStopSentCounter=0;
       state_line<<"State: search, ";
       if(grapple_hold_cube)
       {
@@ -702,7 +702,6 @@ int main( int argc, char** argv )
           cubeDetectedPublisher.publish(detected);
           ros::spinOnce();
       }
-      goalReachedAfterStopSentCounter=0;
       
     }
     else if(state==FOLLOW_CUBE)
@@ -718,6 +717,9 @@ int main( int argc, char** argv )
           move_base_msgs::MoveBaseActionGoal goal_reset = GenerateGoal(img_secs, img_nsecs, odom_x, odom_y, odom_yaw);
           moveBaseGoalPublisher.publish(goal_reset);
           ros::spinOnce();
+          geometry_msgs::Twist twist;
+          twistPublisher.publish(twist);  
+          ros::spinOnce();
 
           //Проверяем статус цели, ждем пока будет успешно закончена, либо несколько секунд
   
@@ -729,7 +731,7 @@ int main( int argc, char** argv )
             goalReachedAfterStopSentCounter+=1;
           }
           message<<"Goal not reached yet. STATUS: "<<goal_status<< " COUNTER: "<<goalReachedAfterStopSentCounter<<" Message: "<<goal_status_message.c_str();
-          if((goal_status==goalStatusSucceeded)||(goalReachedAfterStopSentCounter = 100))
+          if((goal_status==goalStatusSucceeded)||(goalReachedAfterStopSentCounter == 100))
           {
             currentStateMutex.lock();
             current_state = STATE_SEARCH;
@@ -1017,9 +1019,9 @@ const int goalStatusLost = 9;
           //message<<"Goal not reached yet. STATUS: "<<goal_status<< " COUNTER: "<<goalReachedAfterStopSentCounter<<" Message: "<<goal_status_message.c_str();
           switch(goal_status)
           {
-            case goalStatusUnknown:
-              ROS_WARN("Goal deleted. Cube is not grappled, destination not reached, increment cube id.");
-              IncrementCubeId();
+            //case goalStatusUnknown:
+              //ROS_WARN("Goal deleted. Cube is not grappled, destination not reached, increment cube id.");
+              //IncrementCubeId();
               /*currentStateMutex.lock();
               current_state = STATE_SEARCH;
               currentStateMutex.unlock(); 
@@ -1036,6 +1038,7 @@ const int goalStatusLost = 9;
               break;
             case goalStatusSucceeded:
               ROS_INFO("Update cube ID, as dest not reached. Goal status: %d, SUCCEEDED. Message: %s", goal_status, goal_status_message.c_str()); 
+              IncrementCubeId();
               break;
             case goalStatusAborted:
               ROS_ERROR("Work as usual. Goal status: %d, ABORTED. Message: %s", goal_status, goal_status_message.c_str()); 
@@ -1318,7 +1321,7 @@ const int goalStatusLost = 9;
     ros::spinOnce();
 
 
-    std::cout<<state_line.str().c_str()<<"\n";
+    //std::cout<<state_line.str().c_str()<<"\n";
     //cv::imshow("view", debug_img);
     //cv::waitKey(10);
     sensor_msgs::ImagePtr msg = cv_bridge::CvImage(std_msgs::Header(), "bgr8", debug_img).toImageMsg();
@@ -1628,7 +1631,7 @@ void moveBaseStatusCallback(const actionlib_msgs::GoalStatusArray::ConstPtr& msg
   std::string m="";
   for(int i=0; i<msg->status_list.size(); i++)
   {
-    std::cout<<msg->status_list[i].goal_id.id.c_str()<<" "<<currGoalId.c_str()<<"\n";
+    //std::cout<<msg->status_list[i].goal_id.id.c_str()<<" "<<currGoalId.c_str()<<"\n";
     if(msg->status_list[i].goal_id.id==currGoalId)
     {
       status = msg->status_list[i].status;  
