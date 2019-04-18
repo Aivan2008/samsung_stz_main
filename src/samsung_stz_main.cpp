@@ -52,8 +52,7 @@ float angular_speed_multiplier = 0.5f;
 float max_linear_speed = 0.8f;
 float min_linear_speed = 0.05f;
 float linear_speed_multiplier = 0.5f;
-//Радиус точки сброса в метрах
-float drop_point_radius = 0.5; //Квадрат со стороной в метр
+
 /////////////////////////////////////////////////////////////////////////
 //TRACKING PARAMETERS
 //То есть два кадра подряд надо найти объект рядом чтобы писать сообщения
@@ -67,7 +66,12 @@ bool useTracker = false;
 const int followModeMoveBaseGoal = 1;
 const int followModeControlByCoord = 2;
 int followMode = followModeMoveBaseGoal;
-
+//ТОЧКА СБРОСА КУБОВ
+std::mutex dropPointPositionMutex;
+float drop_point_x = 0.0f;
+float drop_point_y = 0.0f;
+//Радиус точки сброса в метрах
+float drop_point_radius = 0.5; //Квадрат со стороной в метр
 /////////////////////////////////////////////////////////////////////////
 //FOLLOW PARAMETERS
 //Минмальное положение по вертикали ("желаемая" позиция куба по Y)
@@ -106,6 +110,8 @@ void grappleCallback(const std_msgs::Bool::ConstPtr& msg);
 void dropPointPositionCallback(const geometry_msgs::Point::ConstPtr& msg);
 //Прием статусов целей
 void moveBaseStatusCallback(const actionlib_msgs::GoalStatusArray::ConstPtr& msg);
+//Получение скоростей от робота (от управляющих узлов)
+void cmdVelCallback(const geometry_msgs::Twist::ConstPtr& msg);
 /////////////////////////////////////////////////////////////////////////
 //FUNCTIONS
 void initParams(ros::NodeHandle* nh_p);
@@ -189,16 +195,27 @@ std::string cube_id;
 //Контроль доступа, строковый и текстовый ID текущего куба к которому посылаем цель
 std::mutex goalStatusMutex;
 const int goalStatusUnknown = -1;
-const int goalStatusActive = 1;
-const int goalStatusSucceeded = 3;
-const int goalStatusAborted = 8;
 const int goalStatusPending = 0;
+const int goalStatusActive = 1;
+const int goalStatusPreempted = 2;
+const int goalStatusSucceeded = 3;
+const int goalStatusAborted = 4;
+const int goalStatusRejected = 5;
+const int goalStatusPreeempting = 6;
+const int goalStatusRecalling = 7;
+const int goalStatusRecalled = 8;
+const int goalStatusLost = 9;
+std::string goalStatusMessage = "";
 int curr_goal_status=goalStatusUnknown;
 /////////////////////////////////////////////////////////////////////////
-//ТОЧКА СБРОСА КУБОВ
-std::mutex dropPointPositionMutex;
-float drop_point_x = 0.0f;
-float drop_point_y = 0.0f;
+// ROBOT CMD_VEL
+std::mutex robotCmdVelMutex;
+float robotVelLinearX = 0.0f;
+float robotVelLinearY = 0.0f;
+float robotVelLinearZ = 0.0f;
+float robotVelAngularX = 0.0f;
+float robotVelAngularY = 0.0f;
+float robotVelAngularZ = 0.0f;
 /////////////////////////////////////////////////////////////////////////
 // __  __       _       
 //|  \/  |     (_)      
@@ -231,7 +248,7 @@ int main( int argc, char** argv )
   ros::Subscriber sub_grapple = nh->subscribe("/box_sensor/is_sensed", 1, grappleCallback);
   ros::Subscriber sub_command = nh->subscribe("/kursant_driver/command", 1, commandCallback);
   ros::Subscriber sub_move_base_status = nh->subscribe("/move_base/status", 1, moveBaseStatusCallback);
-  ros::Subscriber sub_drop_point_pos = nh->subscribe("/samsung/drop_point", 1, dropPointPositionCallback);
+  //ros::Subscriber sub_drop_point_pos = nh->subscribe("/samsung/drop_point", 1, dropPointPositionCallback);
   ros::Publisher twistPublisher = nh->advertise<geometry_msgs::Twist>("/kursant_driver/cmd_vel", 100);
   ros::Publisher commandPublisher = nh->advertise<std_msgs::String>("/kursant_driver/command", 100);
   ros::Publisher cubesPublisher = nh->advertise<visualization_msgs::MarkerArray>("/samsung/cube_positions", 20);
@@ -267,6 +284,7 @@ int main( int argc, char** argv )
 //         __/ |            
 //        |___/             
 /////////////////////////////////////////////////////////////////////////////////////
+  ros::Rate loop_rate(10);
   while(ros::ok())
   {
     //Считать параметры на случай если они изменились
@@ -333,7 +351,17 @@ int main( int argc, char** argv )
     ///////////////////////////////
     goalStatusMutex.lock();
     int goal_status = curr_goal_status;
+    std::string goal_status_message = goalStatusMessage;
     goalStatusMutex.unlock();
+    ///////////////////////////////
+    robotCmdVelMutex.lock();
+    float vel_lin_x = robotVelLinearX;
+    float vel_lin_y = robotVelLinearY;
+    float vel_lin_z = robotVelLinearZ;
+    float vel_ang_x = robotVelAngularX;
+    float vel_ang_y = robotVelAngularY;
+    float vel_ang_z = robotVelAngularZ;
+    robotCmdVelMutex.unlock();
     //Расчет разницы по времени между детекцией и текущим кадром
     //delta_img_det = image_tstamp - detector_tstamp;
     ///////////////////////////////
@@ -544,6 +572,8 @@ int main( int argc, char** argv )
 
     bool print_line = false;
     static bool reset_goal = false;
+
+    static int goalReachedAfterStopSentCounter = 0;
   
 
 //    ____ _____  _  _____ _____   __  __    _    ____ _   _ ___ _   _ _____ 
@@ -672,6 +702,7 @@ int main( int argc, char** argv )
           cubeDetectedPublisher.publish(detected);
           ros::spinOnce();
       }
+      goalReachedAfterStopSentCounter=0;
       
     }
     else if(state==FOLLOW_CUBE)
@@ -687,22 +718,93 @@ int main( int argc, char** argv )
           move_base_msgs::MoveBaseActionGoal goal_reset = GenerateGoal(img_secs, img_nsecs, odom_x, odom_y, odom_yaw);
           moveBaseGoalPublisher.publish(goal_reset);
           ros::spinOnce();
-          //exit(0);
+
+          //Проверяем статус цели, ждем пока будет успешно закончена, либо несколько секунд
+  
+          std::stringstream message;
+          message<<"Cube grappled. ";          
+  
+          if(goal_status!=goalStatusSucceeded)
+          {
+            goalReachedAfterStopSentCounter+=1;
+          }
+          message<<"Goal not reached yet. STATUS: "<<goal_status<< " COUNTER: "<<goalReachedAfterStopSentCounter<<" Message: "<<goal_status_message.c_str();
+          if((goal_status==goalStatusSucceeded)||(goalReachedAfterStopSentCounter = 100))
+          {
+            currentStateMutex.lock();
+            current_state = STATE_SEARCH;
+            currentStateMutex.unlock(); 
+            commandPublisher.publish(msg_box_taken);
+          }
+/*
+const int goalStatusUnknown = -1;
+const int goalStatusPending = 0;
+const int goalStatusActive = 1;
+const int goalStatusPreempted = 2;
+const int goalStatusSucceeded = 3;
+const int goalStatusAborted = 4;
+const int goalStatusRejected = 5;
+const int goalStatusPreeempting = 6;
+const int goalStatusRecalling = 7;
+const int goalStatusRecalled = 8;
+const int goalStatusLost = 9;
+*/
+          switch(goal_status)
+          {
+            case goalStatusUnknown:
+              ROS_WARN("Goal deleted. Cube is in grapple, switch to delivery.");
+              currentStateMutex.lock();
+              current_state = STATE_SEARCH;
+              currentStateMutex.unlock(); 
+              commandPublisher.publish(msg_box_taken);
+              break;
+            case goalStatusPending:
+              ROS_WARN("Goal not reached yet. STATUS: %d, PENDING. Counter: %d Message: %s", goal_status, goalReachedAfterStopSentCounter, goal_status_message.c_str());
+              break;
+            case goalStatusActive:
+              ROS_INFO("Goal not reached yet. STATUS: %d, ACTIVE. Counter: %d Message: %s", goal_status, goalReachedAfterStopSentCounter, goal_status_message.c_str()); 
+              break;
+            case goalStatusPreempted:
+              ROS_WARN("Goal not reached yet. STATUS: %d, PREEMPTED. Counter: %d Message: %s", goal_status, goalReachedAfterStopSentCounter, goal_status_message.c_str());
+              break;
+            case goalStatusSucceeded:
+              ROS_INFO("Goal not reached yet. STATUS: %d, SUCCEEDED. Counter: %d Message: %s", goal_status, goalReachedAfterStopSentCounter, goal_status_message.c_str()); 
+              break;
+            case goalStatusAborted:
+              ROS_ERROR("Goal not reached yet. STATUS: %d, ABORTED. Counter: %d Message: %s", goal_status, goalReachedAfterStopSentCounter, goal_status_message.c_str()); 
+              break;
+            case goalStatusRejected:
+              ROS_ERROR("Goal not reached yet. STATUS: %d, REJECTED. Counter: %d Message: %s", goal_status, goalReachedAfterStopSentCounter, goal_status_message.c_str()); 
+              break;
+            case goalStatusPreeempting:
+              ROS_WARN("Goal not reached yet. STATUS: %d, PREEMPTING. Counter: %d Message: %s", goal_status, goalReachedAfterStopSentCounter, goal_status_message.c_str());
+              break;
+            case goalStatusRecalling:
+              ROS_WARN("Goal not reached yet. STATUS: %d, RECALLING. Counter: %d Message: %s", goal_status, goalReachedAfterStopSentCounter, goal_status_message.c_str());
+              break;
+            case goalStatusRecalled:
+              ROS_WARN("Goal not reached yet. STATUS: %d, RECALLED. Counter: %d Message: %s", goal_status, goalReachedAfterStopSentCounter, goal_status_message.c_str());
+              break;
+            case goalStatusLost:
+              ROS_WARN("Goal not reached yet. STATUS: %d, LOST. Counter: %d Message: %s", goal_status, goalReachedAfterStopSentCounter, goal_status_message.c_str());
+              break;
+          }
         }
         else
         {
           geometry_msgs::Twist twist;
           twistPublisher.publish(twist);  
           ros::spinOnce();
+          currentStateMutex.lock();
+          current_state = STATE_SEARCH;
+          currentStateMutex.unlock(); 
+          commandPublisher.publish(msg_box_taken);
         }
         print_line = true;
         state_line<<"cube grappled ";
-        currentStateMutex.lock();
-        current_state = STATE_SEARCH;
-        currentStateMutex.unlock(); 
-        commandPublisher.publish(msg_box_taken);
         continue;
       }
+        goalReachedAfterStopSentCounter = 0;
         //Here we designate an object to which we want t0
         //We found confident object, send message
         std::vector<double> destination_object;
@@ -906,10 +1008,53 @@ int main( int argc, char** argv )
         if(followMode==followModeMoveBaseGoal)
         {
           //Мы НЕ прибыли в точку назначения, как проверено выше, но цель завершена! Обновим ее.
-          std::cout<<"Goal status: "<<goal_status<<"\n";
-          if(goal_status==goalStatusSucceeded)
+          //std::cout<<"Goal status: "<<goal_status<<"\n";
+          /*if(goal_status==goalStatusSucceeded)
           {
             IncrementCubeId();
+          }*/
+          //std::stringstream message;
+          //message<<"Goal not reached yet. STATUS: "<<goal_status<< " COUNTER: "<<goalReachedAfterStopSentCounter<<" Message: "<<goal_status_message.c_str();
+          switch(goal_status)
+          {
+            case goalStatusUnknown:
+              ROS_WARN("Goal deleted. Cube is not grappled, destination not reached, increment cube id.");
+              IncrementCubeId();
+              /*currentStateMutex.lock();
+              current_state = STATE_SEARCH;
+              currentStateMutex.unlock(); 
+              commandPublisher.publish(msg_box_taken);*/
+              break;
+            case goalStatusPending:
+              ROS_WARN("Work as usual. Goal status: %d, pending. Message: %s", goal_status, goal_status_message.c_str());
+              break;
+            case goalStatusActive:
+              ROS_INFO("Work as usual. Goal status: %d, ACTIVE. Message: %s", goal_status, goal_status_message.c_str()); 
+              break;
+            case goalStatusPreempted:
+              ROS_WARN("Work as usual. Goal status: %d, PREEMPTED. Message: %s", goal_status, goal_status_message.c_str());
+              break;
+            case goalStatusSucceeded:
+              ROS_INFO("Update cube ID, as dest not reached. Goal status: %d, SUCCEEDED. Message: %s", goal_status, goal_status_message.c_str()); 
+              break;
+            case goalStatusAborted:
+              ROS_ERROR("Work as usual. Goal status: %d, ABORTED. Message: %s", goal_status, goal_status_message.c_str()); 
+              break;
+            case goalStatusRejected:
+              ROS_ERROR("Work as usual. Goal status: %d, REJECTED. Message: %s", goal_status, goal_status_message.c_str()); 
+              break;
+            case goalStatusPreeempting:
+              ROS_WARN("Work as usual. Goal status: %d, PREEMPTING. Message: %s", goal_status, goal_status_message.c_str());
+              break;
+            case goalStatusRecalling:
+              ROS_WARN("Work as usual. Goal status: %d, RECALLING. Message: %s", goal_status, goal_status_message.c_str());
+              break;
+            case goalStatusRecalled:
+              ROS_WARN("Work as usual. Goal status: %d, RECALLED. Message: %s", goal_status, goal_status_message.c_str());
+              break;
+            case goalStatusLost:
+              ROS_WARN("Work as usual. Goal status: %d, LOST. Message: %s", goal_status, goal_status_message.c_str());
+              break;
           }
           int move = 0;
           nh->getParam("/samsung_stz_main/move", move);
@@ -923,6 +1068,13 @@ int main( int argc, char** argv )
               //тогда уже и по положению управлять
               
               geometry_msgs::Twist twist;
+              twist.linear.x = vel_lin_x;
+              twist.linear.y = vel_lin_y;
+              twist.linear.z = vel_lin_z;
+              twist.angular.x = vel_ang_x;
+              twist.angular.y = vel_ang_y;
+              twist.angular.z = vel_ang_z;
+              
               twist.angular.z = da_sign*std::min<double>(max_angular_speed, fabs(delta_angle))*angular_speed_multiplier;
               std::cout<<"Rotate: "<< twist.angular.z <<"\n";
               twistPublisher.publish(twist);  
@@ -1171,6 +1323,7 @@ int main( int argc, char** argv )
     //cv::waitKey(10);
     sensor_msgs::ImagePtr msg = cv_bridge::CvImage(std_msgs::Header(), "bgr8", debug_img).toImageMsg();
     debugImagePublisher.publish(msg);
+    loop_rate.sleep();
     ros::spinOnce();
   }
   cv::destroyWindow("view");
@@ -1218,6 +1371,16 @@ visualization_msgs::Marker GenerateMarker( int secs, int nsecs, int id, double x
   cb.color.a = a;
   return cb;
 }
+/*
+
+//ТОЧКА СБРОСА КУБОВ
+std::mutex dropPointPositionMutex;
+float drop_point_x = 0.0f;
+float drop_point_y = 0.0f;
+//Радиус точки сброса в метрах
+float drop_point_radius = 0.5; //Квадрат со стороной в метр
+
+*/
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 //Проинициализировать параметры и накидать их в список, если уже не заданы (скажем, через *.launch-файл)
 void initParams(ros::NodeHandle* nh_p)
@@ -1261,6 +1424,13 @@ void initParams(ros::NodeHandle* nh_p)
         nh_p->setParam("gathering_delta_pos_allowed",gathering_delta_pos_allowed);
     if(!nh_p->hasParam("gathering_delta_angle_allowed"))
         nh_p->setParam("gathering_delta_angle_allowed",gathering_delta_angle_allowed);
+
+    if(!nh_p->hasParam("drop_point_x"))
+        nh_p->setParam("drop_point_x",drop_point_x);
+    if(!nh_p->hasParam("drop_point_y"))
+        nh_p->setParam("drop_point_y",drop_point_y);
+    if(!nh_p->hasParam("drop_point_radius"))
+        nh_p->setParam("drop_point_radius",drop_point_radius);
 
     if(!nh_p->hasParam("follow_mode"))
         nh_p->setParam("follow_mode",followMode);
@@ -1308,6 +1478,13 @@ void readParams(ros::NodeHandle* nh_p)
         nh_p->getParam("gathering_delta_pos_allowed",gathering_delta_pos_allowed);
     if(nh_p->hasParam("gathering_delta_angle_allowed"))
         nh_p->getParam("gathering_delta_angle_allowed",gathering_delta_angle_allowed);
+
+    if(nh_p->hasParam("drop_point_x"))
+        nh_p->getParam("drop_point_x",drop_point_x);
+    if(nh_p->hasParam("drop_point_y"))
+        nh_p->getParam("drop_point_y",drop_point_y);
+    if(nh_p->hasParam("drop_point_radius"))
+        nh_p->getParam("drop_point_radius",drop_point_radius);
 
     if(nh_p->hasParam("follow_mode"))
         nh_p->getParam("follow_mode",followMode);
@@ -1448,17 +1625,44 @@ void moveBaseStatusCallback(const actionlib_msgs::GoalStatusArray::ConstPtr& msg
   std::string currGoalId = GetCubeId();
   goalStatusMutex.lock();
   int status = goalStatusUnknown;
+  std::string m="";
   for(int i=0; i<msg->status_list.size(); i++)
   {
     std::cout<<msg->status_list[i].goal_id.id.c_str()<<" "<<currGoalId.c_str()<<"\n";
     if(msg->status_list[i].goal_id.id==currGoalId)
     {
-      status = msg->status_list[i].status;
+      status = msg->status_list[i].status;  
+      m = msg->status_list[i].text;
       break;
     }
   }
   curr_goal_status = status;
   goalStatusMutex.unlock();
+}
+
+/*
+
+std::mutex robotCmdVelMutex;
+float robotVelLinearX = 0.0f;
+float robotVelLinearY = 0.0f;
+float robotVelLinearZ = 0.0f;
+float robotVelAngularX = 0.0f;
+float robotVelAngularY = 0.0f;
+float robotVelAngularZ = 0.0f;
+
+*/
+
+//Получение скоростей от робота (от управляющих узлов)
+void cmdVelCallback(const geometry_msgs::Twist::ConstPtr& msg)
+{
+  std::lock_guard<std::mutex> odom_guard(robotCmdVelMutex);
+  robotVelLinearX = msg->linear.x;
+  robotVelLinearY = msg->linear.y;
+  robotVelLinearZ = msg->linear.z;
+  robotVelAngularX = msg->angular.x;
+  robotVelAngularY = msg->angular.y;
+  robotVelAngularZ = msg->angular.z;
+ 
 }
 //Позиция точки сброса
 /*
@@ -1466,6 +1670,7 @@ std::mutex dropPointPositionMutex;
 float drop_point_x = 0.0f;
 float drop_point_y = 0.0f;
 */
+/*
 void dropPointPositionCallback(const geometry_msgs::Point::ConstPtr& msg)
 {
   dropPointPositionMutex.lock();
@@ -1473,6 +1678,7 @@ void dropPointPositionCallback(const geometry_msgs::Point::ConstPtr& msg)
   drop_point_y = msg->y;
   dropPointPositionMutex.unlock();
 }
+*/
 //
 /*
 std::mutex cubeIdMutex;
