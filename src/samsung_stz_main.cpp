@@ -191,6 +191,7 @@ std::mutex goalStatusMutex;
 const int goalStatusUnknown = -1;
 const int goalStatusActive = 1;
 const int goalStatusSucceeded = 3;
+const int goalStatusAborted = 8;
 const int goalStatusPending = 0;
 int curr_goal_status=goalStatusUnknown;
 /////////////////////////////////////////////////////////////////////////
@@ -229,7 +230,7 @@ int main( int argc, char** argv )
   ros::Subscriber sub_odom = nh->subscribe("/kursant_driver/odom", 1, odomCallback);
   ros::Subscriber sub_grapple = nh->subscribe("/box_sensor/is_sensed", 1, grappleCallback);
   ros::Subscriber sub_command = nh->subscribe("/kursant_driver/command", 1, commandCallback);
-  ros::Subscriber sub_move_base_status = nh->subscribe("/move_base/status", 1, commandCallback);
+  ros::Subscriber sub_move_base_status = nh->subscribe("/move_base/status", 1, moveBaseStatusCallback);
   ros::Subscriber sub_drop_point_pos = nh->subscribe("/samsung/drop_point", 1, dropPointPositionCallback);
   ros::Publisher twistPublisher = nh->advertise<geometry_msgs::Twist>("/kursant_driver/cmd_vel", 100);
   ros::Publisher commandPublisher = nh->advertise<std_msgs::String>("/kursant_driver/command", 100);
@@ -330,6 +331,9 @@ int main( int argc, char** argv )
     float drop_pt_y = drop_point_y;
     dropPointPositionMutex.unlock();
     ///////////////////////////////
+    goalStatusMutex.lock();
+    int goal_status = curr_goal_status;
+    goalStatusMutex.unlock();
     //Расчет разницы по времени между детекцией и текущим кадром
     //delta_img_det = image_tstamp - detector_tstamp;
     ///////////////////////////////
@@ -422,7 +426,7 @@ int main( int argc, char** argv )
               //r[3] = map_x;
               //r[4] = map_y;
               
-              if ((map_x>min_map_x)&&(map_x<max_map_x)&&(map_y>min_map_y)&&(map_y<max_map_y))
+              if (!((map_x>min_map_x)&&(map_x<max_map_x)&&(map_y>min_map_y)&&(map_y<max_map_y)))
               {
                 det[0] = xmin;
                 det[1] = ymin;
@@ -588,6 +592,7 @@ int main( int argc, char** argv )
                 //currentStateMutex.unlock();
                 visualization_msgs::Marker cb = GenerateMarker(img_secs,img_nsecs, detections.size()+1, previousDesiredObjectPosition[4], previousDesiredObjectPosition[5], 0.11, 1.0, 1.0, 1.0, 0.9);
                 cubes.markers.push_back(cb);
+                lost_counter=0;
                 
             }
             else
@@ -602,7 +607,7 @@ int main( int argc, char** argv )
                                 cv::Point2f(currentDesiredObjectPosition[2],currentDesiredObjectPosition[3]), cv::Scalar(100,100,100), 2);
                   visualization_msgs::Marker cb = GenerateMarker(img_secs,img_nsecs,detections.size()+1, previousDesiredObjectPosition[4], previousDesiredObjectPosition[5], 0.11, 0.5, 0.5, 0.5, 0.9);
                   cubes.markers.push_back(cb);
-                  cube_detected_prev = true;
+                  cube_detected_prev = false;
               }
               else
               {
@@ -621,7 +626,7 @@ int main( int argc, char** argv )
                   {
                     print_line = true;
                     state_line<<"Delete object\n";
-                    lost_counter+=1;
+                    lost_counter=0;
                     /*if(cube_detected_prev == true)
                     {
                       commandPublisher.publish(msg_box_lost);
@@ -638,13 +643,18 @@ int main( int argc, char** argv )
             if(previousDesiredObjectPosition.size()>0)
             {
               //Показываем вслепую
-              //lost_counter+=1;
+              lost_counter+=1;
               //if(cube_detected_prev == true)
               state_line<<"no frame, use last position ";
               cv::rectangle(debug_img, cv::Point2f(previousDesiredObjectPosition[0], previousDesiredObjectPosition[1]), 
                       cv::Point2f(previousDesiredObjectPosition[2],previousDesiredObjectPosition[3]), cv::Scalar(100, 100, 100), 2);
               visualization_msgs::Marker cb = GenerateMarker( img_secs, img_nsecs, detections.size()+1, previousDesiredObjectPosition[4], previousDesiredObjectPosition[5], 0.11, 0.5, 0.5, 0.5, 0.9);
               cubes.markers.push_back(cb);
+              if(lost_counter > 10)
+              {
+                previousDesiredObjectPosition.clear();
+                cube_detected_prev = false;
+              }
             }
             else
             {
@@ -653,6 +663,7 @@ int main( int argc, char** argv )
                 commandPublisher.publish(msg_box_lost);
                 ros::spinOnce();
               }*/
+              state_line<<" no detection ";
               cube_detected_prev = false;
             }
          }
@@ -668,19 +679,15 @@ int main( int argc, char** argv )
 
       state_line<<"State: follow, ";      //Мы доехали, сменить состояние
       if(grapple_hold_cube)
-      {
-        print_line = true;
-        state_line<<"cube grappled ";
-        currentStateMutex.lock();
-        current_state = STATE_SEARCH;
-        currentStateMutex.unlock(); 
-        commandPublisher.publish(msg_box_taken);
+      {        
+
         if(followMode==followModeMoveBaseGoal)
         {
           //Эта штука не работает, или работает не так, надо отменить текущую цель
           move_base_msgs::MoveBaseActionGoal goal_reset = GenerateGoal(img_secs, img_nsecs, odom_x, odom_y, odom_yaw);
           moveBaseGoalPublisher.publish(goal_reset);
           ros::spinOnce();
+          //exit(0);
         }
         else
         {
@@ -688,93 +695,63 @@ int main( int argc, char** argv )
           twistPublisher.publish(twist);  
           ros::spinOnce();
         }
+        print_line = true;
+        state_line<<"cube grappled ";
+        currentStateMutex.lock();
+        current_state = STATE_SEARCH;
+        currentStateMutex.unlock(); 
+        commandPublisher.publish(msg_box_taken);
+        continue;
       }
-      //Here we designate an object to which we want t0
-      //We found confident object, send message
-      std::vector<double> destination_object;
-      static cv::Scalar last_color = cv::Scalar(0, 255, 0);
-      if(detection_received)
-      {
-        if(detectedConfidentObject)
+        //Here we designate an object to which we want t0
+        //We found confident object, send message
+        std::vector<double> destination_object;
+        static cv::Scalar last_color = cv::Scalar(0, 255, 0);
+        if(detection_received)
         {
-          state_line<<"Update confident ";
-          previousDesiredObjectPosition = currentDesiredObjectPosition;
-          destination_object = currentDesiredObjectPosition;
-          cv::rectangle(debug_img, cv::Point2f(currentDesiredObjectPosition[0], currentDesiredObjectPosition[1]), 
-                        cv::Point2f(currentDesiredObjectPosition[2],currentDesiredObjectPosition[3]), cv::Scalar(0,255,0), 2);
-          last_color = cv::Scalar(0,255,0);
-          visualization_msgs::Marker cb = GenerateMarker( img_secs, img_nsecs, detections.size()+1, previousDesiredObjectPosition[4], previousDesiredObjectPosition[5], 0.11, 0.0, 1.0, 0.0, 0.9);
-          cubes.markers.push_back(cb);
-          lost_counter=0;
-        }
-        else
-        {
-          //We have lost object or had no-one, but now found a new one, switch to it then
-          if(currentDesiredObjectPosition.size()>0)
+          if(detectedConfidentObject)
           {
-            state_line<<"Update unconfident ";
+            state_line<<"Update confident ";
             previousDesiredObjectPosition = currentDesiredObjectPosition;
-            destination_object = previousDesiredObjectPosition;
+            destination_object = currentDesiredObjectPosition;
             cv::rectangle(debug_img, cv::Point2f(currentDesiredObjectPosition[0], currentDesiredObjectPosition[1]), 
-                        cv::Point2f(currentDesiredObjectPosition[2],currentDesiredObjectPosition[3]), cv::Scalar(0,255,0), 2);
+                          cv::Point2f(currentDesiredObjectPosition[2],currentDesiredObjectPosition[3]), cv::Scalar(0,255,0), 2);
             last_color = cv::Scalar(0,255,0);
-            visualization_msgs::Marker cb = GenerateMarker( img_secs, img_nsecs, detections.size()+1, previousDesiredObjectPosition[4], previousDesiredObjectPosition[5], 0.11, 0.0, 0.5, 0.0, 0.9);
+            visualization_msgs::Marker cb = GenerateMarker( img_secs, img_nsecs, detections.size()+1, previousDesiredObjectPosition[4], previousDesiredObjectPosition[5], 0.11, 0.0, 1.0, 0.0, 0.9);
             cubes.markers.push_back(cb);
             lost_counter=0;
           }
           else
           {
-            lost_counter+=1;
-            state_line<<", lost_counter="<<lost_counter<<" ";
-            if(lost_counter>=maximum_lost_frames)
+            //We have lost object or had no-one, but now found a new one, switch to it then
+            if(currentDesiredObjectPosition.size()>0)
             {
-              //Тут есть варианты
-              //Мы ехали-ехали и потеряли объект, не видим его на том же месте дольше какого-то времени, разумно большого
-              //Потрачено, нет ни текущего ни предыдущего положения, куб потерян
-              print_line = true;
-              state_line<<"Pub LOST COUNTER ";
-              commandPublisher.publish(msg_box_not_taken);
-              ros::spinOnce();
-              currentStateMutex.lock();
-              current_state = STATE_SEARCH;
-              currentStateMutex.unlock();
-              if(followMode==followModeMoveBaseGoal)
-              {
-                move_base_msgs::MoveBaseActionGoal goal_reset = GenerateGoal(img_secs, img_nsecs, odom_x, odom_y, odom_yaw);
-                moveBaseGoalPublisher.publish(goal_reset);
-                ros::spinOnce();
-              }
-              else
-              {
-                geometry_msgs::Twist twist;
-                twistPublisher.publish(twist);  
-                ros::spinOnce();
-              }
+              state_line<<"Update unconfident ";
+              previousDesiredObjectPosition = currentDesiredObjectPosition;
+              destination_object = previousDesiredObjectPosition;
+              cv::rectangle(debug_img, cv::Point2f(currentDesiredObjectPosition[0], currentDesiredObjectPosition[1]), 
+                          cv::Point2f(currentDesiredObjectPosition[2],currentDesiredObjectPosition[3]), cv::Scalar(0,255,0), 2);
+              last_color = cv::Scalar(0,255,0);
+              visualization_msgs::Marker cb = GenerateMarker( img_secs, img_nsecs, detections.size()+1, previousDesiredObjectPosition[4], previousDesiredObjectPosition[5], 0.11, 0.0, 0.5, 0.0, 0.9);
+              cubes.markers.push_back(cb);
+              lost_counter=0;
             }
             else
             {
-              if(previousDesiredObjectPosition.size()>0)
+              lost_counter+=1;
+              state_line<<", lost_counter="<<lost_counter<<" ";
+              if(lost_counter>=maximum_lost_frames)
               {
-                state_line<<"Use last position ";
-                destination_object = previousDesiredObjectPosition;
-                cv::rectangle(debug_img, cv::Point2f(previousDesiredObjectPosition[0], previousDesiredObjectPosition[1]), 
-                        cv::Point2f(previousDesiredObjectPosition[2],previousDesiredObjectPosition[3]), cv::Scalar(0,0,255), 2);
-                last_color = cv::Scalar(0,0,255);
-                visualization_msgs::Marker cb = GenerateMarker( img_secs, img_nsecs, detections.size()+1, previousDesiredObjectPosition[4], previousDesiredObjectPosition[5], 0.11, 1.0, 0.0, 0.0, 0.9);
-                cubes.markers.push_back(cb);
-                //Если предыдущее положение было в зоне захвата, то перейти в режим доезжания, иначе продолжить движение по алгоритму
-              }
-              else
-              {
+                //Тут есть варианты
+                //Мы ехали-ехали и потеряли объект, не видим его на том же месте дольше какого-то времени, разумно большого
                 //Потрачено, нет ни текущего ни предыдущего положения, куб потерян
                 print_line = true;
-
-                state_line<<"Pub LOST NO PREVIOUS DETECTION ";
+                state_line<<"Pub LOST COUNTER ";
                 commandPublisher.publish(msg_box_not_taken);
                 ros::spinOnce();
                 currentStateMutex.lock();
                 current_state = STATE_SEARCH;
-                currentStateMutex.unlock(); 
+                currentStateMutex.unlock();
                 if(followMode==followModeMoveBaseGoal)
                 {
                   move_base_msgs::MoveBaseActionGoal goal_reset = GenerateGoal(img_secs, img_nsecs, odom_x, odom_y, odom_yaw);
@@ -786,11 +763,48 @@ int main( int argc, char** argv )
                   geometry_msgs::Twist twist;
                   twistPublisher.publish(twist);  
                   ros::spinOnce();
-                }              
+                }
+              }
+              else
+              {
+                if(previousDesiredObjectPosition.size()>0)
+                {
+                  state_line<<"Use last position ";
+                  destination_object = previousDesiredObjectPosition;
+                  cv::rectangle(debug_img, cv::Point2f(previousDesiredObjectPosition[0], previousDesiredObjectPosition[1]), 
+                          cv::Point2f(previousDesiredObjectPosition[2],previousDesiredObjectPosition[3]), cv::Scalar(0,0,255), 2);
+                  last_color = cv::Scalar(0,0,255);
+                  visualization_msgs::Marker cb = GenerateMarker( img_secs, img_nsecs, detections.size()+1, previousDesiredObjectPosition[4], previousDesiredObjectPosition[5], 0.11, 1.0, 0.0, 0.0, 0.9);
+                  cubes.markers.push_back(cb);
+                  //Если предыдущее положение было в зоне захвата, то перейти в режим доезжания, иначе продолжить движение по алгоритму
+                }
+                else
+                {
+                  //Потрачено, нет ни текущего ни предыдущего положения, куб потерян
+                  print_line = true;
+
+                  state_line<<"Pub LOST NO PREVIOUS DETECTION ";
+                  commandPublisher.publish(msg_box_not_taken);
+                  ros::spinOnce();
+                  currentStateMutex.lock();
+                  current_state = STATE_SEARCH;
+                  currentStateMutex.unlock(); 
+                  if(followMode==followModeMoveBaseGoal)
+                  {
+                    move_base_msgs::MoveBaseActionGoal goal_reset = GenerateGoal(img_secs, img_nsecs, odom_x, odom_y, odom_yaw);
+                    moveBaseGoalPublisher.publish(goal_reset);
+                    ros::spinOnce();
+                  }
+                  else
+                  {
+                    geometry_msgs::Twist twist;
+                    twistPublisher.publish(twist);  
+                    ros::spinOnce();
+                  }              
+                }
               }
             }
           }
-        }
       }
       else
       {
@@ -892,7 +906,8 @@ int main( int argc, char** argv )
         if(followMode==followModeMoveBaseGoal)
         {
           //Мы НЕ прибыли в точку назначения, как проверено выше, но цель завершена! Обновим ее.
-          if(curr_goal_status==goalStatusSucceeded)
+          std::cout<<"Goal status: "<<goal_status<<"\n";
+          if(goal_status==goalStatusSucceeded)
           {
             IncrementCubeId();
           }
@@ -912,19 +927,11 @@ int main( int argc, char** argv )
               std::cout<<"Rotate: "<< twist.angular.z <<"\n";
               twistPublisher.publish(twist);  
               ros::spinOnce();
-              clear_vel = true;
             }  
             else
             {
              // if(reset_goal == true)
               //{
-                if(clear_vel)
-                {
-                  geometry_msgs::Twist twist;
-                  twistPublisher.publish(twist);  
-                  ros::spinOnce();
-                }
-                clear_vel = false;
                 state_line<<" SEND_GOAL "<<"\n";
                 reset_goal=false;
                 moveBaseGoalPublisher.publish(goal);
@@ -1443,12 +1450,14 @@ void moveBaseStatusCallback(const actionlib_msgs::GoalStatusArray::ConstPtr& msg
   int status = goalStatusUnknown;
   for(int i=0; i<msg->status_list.size(); i++)
   {
+    std::cout<<msg->status_list[i].goal_id.id.c_str()<<" "<<currGoalId.c_str()<<"\n";
     if(msg->status_list[i].goal_id.id==currGoalId)
     {
       status = msg->status_list[i].status;
       break;
     }
   }
+  curr_goal_status = status;
   goalStatusMutex.unlock();
 }
 //Позиция точки сброса
