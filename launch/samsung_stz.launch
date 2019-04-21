@@ -38,9 +38,9 @@
 <!-- Длина доезда в метрах -->
         <param name="follow_meter_length" value="0.2"/>
 <!-- Допустимое смещение от целевого положения в метрах по прибытию в точку подбора -->
-        <param name="gathering_delta_pos_allowed" value="0.05"/>
+        <param name="gathering_delta_pos_allowed" value="0.1"/>
 <!-- Допустимое смещение по углу от целевого объекта-->
-        <param name="gathering_delta_angle_allowed" value="0.05"/>
+        <param name="gathering_delta_angle_allowed" value="0.1"/>
 
 
 <!-- Положение точки сброса в кадре odom по X -->
