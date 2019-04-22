@@ -23,9 +23,12 @@
 #include "std_msgs/Bool.h"
 #include "nav_msgs/Odometry.h"
 #include "actionlib_msgs/GoalStatusArray.h"
+#include "move_base_msgs/MoveBaseActionResult.h"
 #include "actionlib_msgs/GoalID.h"
 #include "geometry_msgs/Point.h"
+#include "geometry_msgs/PointStamped.h"
 #include <tf/transform_datatypes.h>
+#include <tf/transform_listener.h>
 #include <visualization_msgs/Marker.h>
 #include <visualization_msgs/MarkerArray.h>
 #include <move_base_msgs/MoveBaseActionGoal.h>
@@ -112,7 +115,7 @@ void grappleCallback(const std_msgs::Bool::ConstPtr& msg);
 //Позиция точки сброса
 void dropPointPositionCallback(const geometry_msgs::Point::ConstPtr& msg);
 //Прием статусов целей
-void moveBaseStatusCallback(const actionlib_msgs::GoalStatusArray::ConstPtr& msg);
+void moveBaseStatusCallback(const move_base_msgs::MoveBaseActionResult::ConstPtr& msg);
 //Получение скоростей от робота (от управляющих узлов)
 void cmdVelCallback(const geometry_msgs::Twist::ConstPtr& msg);
 /////////////////////////////////////////////////////////////////////////
@@ -122,9 +125,9 @@ void readParams(ros::NodeHandle* nh_p);
 //Служебная функция для расчета положения куба в пространстве
 void calcBoxPosition(double u, double v, double mod, double &X, double&Z, double &angle);
 //
-visualization_msgs::Marker GenerateMarker( int secs, int nsecs, int id, double x, double y, double scale, float r, float g, float b, float a);
+visualization_msgs::Marker GenerateMarker( int secs, int nsecs, int id, double x, double y, double scale, float r, float g, float b, float a, std::string frame="map");
 //
-move_base_msgs::MoveBaseActionGoal GenerateGoal(int sec, int nsec, double dest_x, double dest_y, double dest_angle);
+move_base_msgs::MoveBaseActionGoal GenerateGoal(int sec, int nsec, double dest_x, double dest_y, double dest_angle, std::string frame="odom");
 //
 std::string GetCubeId();
 //
@@ -261,7 +264,7 @@ int main( int argc, char** argv )
   ros::Subscriber sub_odom = nh->subscribe("/kursant_driver/odom", 1, odomCallback);
   ros::Subscriber sub_grapple = nh->subscribe("/box_sensor/is_sensed", 1, grappleCallback);
   ros::Subscriber sub_command = nh->subscribe("/kursant_driver/command", 1, commandCallback);
-  ros::Subscriber sub_move_base_status = nh->subscribe("/move_base/status", 1, moveBaseStatusCallback);
+  ros::Subscriber sub_move_base_status = nh->subscribe("/move_base/result", 1, moveBaseStatusCallback);
   //ros::Subscriber sub_drop_point_pos = nh->subscribe("/samsung/drop_point", 1, dropPointPositionCallback);
   ros::Publisher twistPublisher = nh->advertise<geometry_msgs::Twist>("/kursant_driver/cmd_vel", 100);
   ros::Publisher commandPublisher = nh->advertise<std_msgs::String>("/kursant_driver/command", 100);
@@ -300,6 +303,7 @@ int main( int argc, char** argv )
 //        |___/             
 /////////////////////////////////////////////////////////////////////////////////////
   ros::Rate loop_rate(100);
+  tf::TransformListener listener(ros::Duration(0.3));
   while(ros::ok())
   {
     //Считать параметры на случай если они изменились
@@ -406,15 +410,30 @@ int main( int argc, char** argv )
     float min_map_y = drop_point_y - drop_point_radius;
     float max_map_y = drop_point_y + drop_point_radius;
 
+    /*ros::Time t_now = ros::Time::now();
+
+    geometry_msgs::PointStamped center_point, center_point_map;
+    //center_point.header.stamp.sec = img_secs-1;
+    //center_point.header.stamp.nsec = img_nsecs;
+    center_point.header.frame_id = "map";
+    center_point.point.x = drop_pt_x;
+    center_point.point.y = drop_pt_y;*/
+
+    //try
+    //{
+      
+      //listener.transformPoint("odom", center_point, center_point_map);
+      
+
     visualization_msgs::Marker home_marker;
-    home_marker.header.frame_id = "odom";
+    home_marker.header.frame_id = "map";//center_point_map.header.frame_id;
     home_marker.header.stamp.sec = img_secs;
     home_marker.header.stamp.nsec = img_nsecs;
     home_marker.ns = "home_point";
     home_marker.id = 0;
     home_marker.type = 1;//CUBE
-    home_marker.pose.position.x = drop_pt_x;
-    home_marker.pose.position.y = drop_pt_y;
+    home_marker.pose.position.x = drop_point_x;
+    home_marker.pose.position.y = drop_point_y;
     home_marker.scale.x = drop_point_radius*2.0;
     home_marker.scale.y = drop_point_radius*2.0;
     home_marker.scale.z = 0.2;
@@ -423,6 +442,13 @@ int main( int argc, char** argv )
     home_marker.color.b = 0;
     home_marker.color.a = 0.5;
     homeAreaPublisher.publish(home_marker);
+    //}
+    //catch(tf::TransformException ex){
+    //  ROS_ERROR("%s",ex.what());
+    //  ros::Duration(1.0).sleep();
+    //}
+
+    
 
     if(detections.size()>0)
     {
@@ -443,7 +469,7 @@ int main( int argc, char** argv )
             if(ymin>minimal_y && conf>minimal_conf)
             {
               std::vector<double> det;
-              det.resize(7);
+              det.resize(11);
               calcBoxPosition(xmin, ymax, calib_mod, X1, Z1, angle1);
               calcBoxPosition(xmax, ymax, calib_mod, X2, Z2, angle2);
 
@@ -459,15 +485,39 @@ int main( int argc, char** argv )
               ss<<"X="<<X<<" Z="<<Z;
               //Тут печатаем на картинке пространственные координаты
               cv::putText(debug_img, ss.str(), cvPoint(xmin,ymin-10),
-                  cv::FONT_HERSHEY_COMPLEX_SMALL, 0.8, cvScalar(255,0,0), 1, CV_AA);        
+                  cv::FONT_HERSHEY_COMPLEX_SMALL, 0.8, cvScalar(255,0,0), 1, CV_AA); 
+                     
 
               //r[0] = X;
               //r[1] = Z;
               //r[2] = A;
-              double map_x = det_x + (Z+0.20)*cos(det_yaw) + X*sin(det_yaw);
-              double map_y = det_y + (Z+0.20)*sin(det_yaw) - X*cos(det_yaw);
+              geometry_msgs::PointStamped cube_point, cube_point_map;
+              ros::Time t_now = ros::Time(0);
+              //cube_point.header.stamp.sec = t_now.sec;//img_secs-1;
+              //cube_point.header.stamp.nsec = t_now.nsec;//img_nsecs;
+              cube_point.point.x = Z;
+              cube_point.point.y = -X;
+              cube_point.header.frame_id = "camera";
+              double map_x = 0;
+              double map_y = 0;
+              try
+              {
+                listener.transformPoint("map", ros::Time(0), cube_point, "camera", cube_point_map); 
+                map_x = cube_point_map.point.x;
+                map_y = cube_point_map.point.y;
+              }
+              catch(tf::TransformException ex){
+                ROS_ERROR("%s",ex.what());
+                ros::Duration(0.01).sleep();
+                continue;
+              }
 
-                            
+              
+
+              double odom_x = det_x + (Z+0.20)*cos(det_yaw) + X*sin(det_yaw);
+              double odom_y = det_y + (Z+0.20)*sin(det_yaw) - X*cos(det_yaw);
+
+                          
 
               //r[3] = map_x;
               //r[4] = map_y;
@@ -478,9 +528,13 @@ int main( int argc, char** argv )
                 det[1] = ymin;
                 det[2] = xmax;
                 det[3] = ymax;
-                det[4] = map_x;
-                det[5] = map_y;
+                det[4] = odom_x;
+                det[5] = odom_y;
                 det[6] = A;
+                det[7] = map_x;
+                det[8] = map_y;
+                det[9] = Z;
+                det[10] = -X;
                 current_detections.push_back(det);
               }
             }
@@ -514,7 +568,8 @@ int main( int argc, char** argv )
             float curr_y = current_detections[i][5];
             float curr_a = current_detections[i][6];
   
-            visualization_msgs::Marker cb = GenerateMarker( img_secs, img_nsecs, i, curr_x, curr_y, 0.1,204.0/255.0,168.0/255,45.0/255.0, 1.0);
+            visualization_msgs::Marker cb = GenerateMarker( img_secs, img_nsecs, i, current_detections[i][4], current_detections[i][5], 0.1,204.0/255.0,168.0/255,45.0/255.0, 1.0, "odom");
+            //visualization_msgs::Marker cb = GenerateMarker( img_secs, img_nsecs, i, curr_x, curr_y, 0.1,204.0/255.0,168.0/255,45.0/255.0, 1.0);
             cubes.markers.push_back(cb);
 
 
@@ -638,7 +693,7 @@ int main( int argc, char** argv )
                 //state_line<<" RESET GOAL "<<"\n";
                 //reset_goal = true;
                 //currentStateMutex.unlock();
-                visualization_msgs::Marker cb = GenerateMarker(img_secs,img_nsecs, detections.size()+1, previousDesiredObjectPosition[4], previousDesiredObjectPosition[5], 0.11, 1.0, 1.0, 1.0, 0.9);
+                visualization_msgs::Marker cb = GenerateMarker(img_secs,img_nsecs, detections.size()+1, previousDesiredObjectPosition[7], previousDesiredObjectPosition[8], 0.11, 1.0, 1.0, 1.0, 0.9);
                 cubes.markers.push_back(cb);
                 lost_counter=0;
                 
@@ -653,7 +708,7 @@ int main( int argc, char** argv )
                   previousDesiredObjectPosition = currentDesiredObjectPosition;
                   cv::rectangle(debug_img, cv::Point2f(currentDesiredObjectPosition[0], currentDesiredObjectPosition[1]), 
                                 cv::Point2f(currentDesiredObjectPosition[2],currentDesiredObjectPosition[3]), cv::Scalar(100,100,100), 2);
-                  visualization_msgs::Marker cb = GenerateMarker(img_secs,img_nsecs,detections.size()+1, previousDesiredObjectPosition[4], previousDesiredObjectPosition[5], 0.11, 0.5, 0.5, 0.5, 0.9);
+                  visualization_msgs::Marker cb = GenerateMarker(img_secs,img_nsecs,detections.size()+1, previousDesiredObjectPosition[7], previousDesiredObjectPosition[8], 0.11, 0.5, 0.5, 0.5, 0.9);
                   cubes.markers.push_back(cb);
                   cube_detected_prev = false;
               }
@@ -666,7 +721,7 @@ int main( int argc, char** argv )
                     previousDesiredObjectPosition = desired_rect;
                     desiredObjectTrajectoryLength = 1;
                     lost_counter=0;
-                    visualization_msgs::Marker cb = GenerateMarker(img_secs, img_nsecs, detections.size()+1,previousDesiredObjectPosition[4],previousDesiredObjectPosition[5],0.11, 1.0,1.0,1.0, 0.9);
+                    visualization_msgs::Marker cb = GenerateMarker(img_secs, img_nsecs, detections.size()+1,previousDesiredObjectPosition[7],previousDesiredObjectPosition[8],0.11, 1.0,1.0,1.0, 0.9);
                     cubes.markers.push_back(cb);
                     cube_detected_prev = false;
                   }
@@ -696,7 +751,7 @@ int main( int argc, char** argv )
               state_line<<"no frame, use last position ";
               cv::rectangle(debug_img, cv::Point2f(previousDesiredObjectPosition[0], previousDesiredObjectPosition[1]), 
                       cv::Point2f(previousDesiredObjectPosition[2],previousDesiredObjectPosition[3]), cv::Scalar(100, 100, 100), 2);
-              visualization_msgs::Marker cb = GenerateMarker( img_secs, img_nsecs, detections.size()+1, previousDesiredObjectPosition[4], previousDesiredObjectPosition[5], 0.11, 0.5, 0.5, 0.5, 0.9);
+              visualization_msgs::Marker cb = GenerateMarker( img_secs, img_nsecs, detections.size()+1, previousDesiredObjectPosition[7], previousDesiredObjectPosition[8], 0.11, 0.5, 0.5, 0.5, 0.9);
               cubes.markers.push_back(cb);
               if(lost_counter > 10)
               {
@@ -896,7 +951,7 @@ int main( int argc, char** argv )
             cv::rectangle(debug_img, cv::Point2f(currentDesiredObjectPosition[0], currentDesiredObjectPosition[1]), 
                           cv::Point2f(currentDesiredObjectPosition[2],currentDesiredObjectPosition[3]), cv::Scalar(0,255,0), 2);
             last_color = cv::Scalar(0,255,0);
-            visualization_msgs::Marker cb = GenerateMarker( img_secs, img_nsecs, detections.size()+1, previousDesiredObjectPosition[4], previousDesiredObjectPosition[5], 0.11, 0.0, 1.0, 0.0, 0.9);
+            visualization_msgs::Marker cb = GenerateMarker( img_secs, img_nsecs, detections.size()+1, previousDesiredObjectPosition[7], previousDesiredObjectPosition[8], 0.11, 0.0, 1.0, 0.0, 0.9);
             cubes.markers.push_back(cb);
             lost_counter=0;
             update_goal = true;
@@ -912,7 +967,7 @@ int main( int argc, char** argv )
               cv::rectangle(debug_img, cv::Point2f(currentDesiredObjectPosition[0], currentDesiredObjectPosition[1]), 
                           cv::Point2f(currentDesiredObjectPosition[2],currentDesiredObjectPosition[3]), cv::Scalar(0,255,0), 2);
               last_color = cv::Scalar(0,255,0);
-              visualization_msgs::Marker cb = GenerateMarker( img_secs, img_nsecs, detections.size()+1, previousDesiredObjectPosition[4], previousDesiredObjectPosition[5], 0.11, 0.0, 0.5, 0.0, 0.9);
+              visualization_msgs::Marker cb = GenerateMarker( img_secs, img_nsecs, detections.size()+1, previousDesiredObjectPosition[7], previousDesiredObjectPosition[8], 0.11, 0.0, 0.5, 0.0, 0.9);
               cubes.markers.push_back(cb);
               lost_counter=0;
             }
@@ -958,7 +1013,7 @@ int main( int argc, char** argv )
                   cv::rectangle(debug_img, cv::Point2f(previousDesiredObjectPosition[0], previousDesiredObjectPosition[1]), 
                           cv::Point2f(previousDesiredObjectPosition[2],previousDesiredObjectPosition[3]), cv::Scalar(0,0,255), 2);
                   last_color = cv::Scalar(0,0,255);
-                  visualization_msgs::Marker cb = GenerateMarker( img_secs, img_nsecs, detections.size()+1, previousDesiredObjectPosition[4], previousDesiredObjectPosition[5], 0.11, 1.0, 0.0, 0.0, 0.9);
+                  visualization_msgs::Marker cb = GenerateMarker( img_secs, img_nsecs, detections.size()+1, previousDesiredObjectPosition[7], previousDesiredObjectPosition[8], 0.11, 1.0, 0.0, 0.0, 0.9);
                   cubes.markers.push_back(cb);
                   //Если предыдущее положение было в зоне захвата, то перейти в режим доезжания, иначе продолжить движение по алгоритму
                   update_goal = true;
@@ -1003,12 +1058,13 @@ int main( int argc, char** argv )
           destination_object = previousDesiredObjectPosition;
           cv::rectangle(debug_img, cv::Point2f(previousDesiredObjectPosition[0], previousDesiredObjectPosition[1]), 
                   cv::Point2f(previousDesiredObjectPosition[2],previousDesiredObjectPosition[3]), last_color, 2);
-          visualization_msgs::Marker cb = GenerateMarker( img_secs, img_nsecs, detections.size()+1, previousDesiredObjectPosition[4], previousDesiredObjectPosition[5], 0.11, 0.0, 1.0, 0.0, 0.9);
+          visualization_msgs::Marker cb = GenerateMarker( img_secs, img_nsecs, detections.size()+1, previousDesiredObjectPosition[7], previousDesiredObjectPosition[8], 0.11, 0.0, 1.0, 0.0, 0.9);
           cubes.markers.push_back(cb);
         }
       }
                               
       static move_base_msgs::MoveBaseActionGoal goal = move_base_msgs::MoveBaseActionGoal();
+      bool goal_updated = false;
       if(destination_object.size()>0 )
       {
       
@@ -1056,8 +1112,11 @@ int main( int argc, char** argv )
         { 
           print_line = true;
           state_line<<" gen goal"<<"\n";
-          
-          goal = GenerateGoal(img_secs, img_nsecs, dest_x, dest_y, dest_angle);
+          double na = destination_object[6];
+          double nx = destination_object[9]+follow_meter_length*cos(na);
+          double ny = destination_object[10]+follow_meter_length*sin(-na);
+          goal = GenerateGoal(img_secs, img_nsecs, nx, ny, -na, "camera");
+          goal_updated=true;
         }
         geometry_msgs::PoseStamped gp;
         gp.header = goal.goal.target_pose.header;
@@ -1177,8 +1236,8 @@ int main( int argc, char** argv )
           }
           int move = 0;
           nh->getParam("/samsung_stz_main/move", move);
-          //if(update_goal)
-          //{
+          if(goal_updated)
+          {
             int da_sign = (delta_angle>0)?(1):(-1);
             static bool clear_vel = false;
             if(fabs(delta_angle)>M_PI/18)
@@ -1201,7 +1260,7 @@ int main( int argc, char** argv )
             }  
             else
             {
-             // if(reset_goal == true)
+              // if(reset_goal == true)
               //{void SendGoalToMoveBase(const ros::Publisher &pub, move_base_msgs::MoveBaseActionGoal goal, int img_sec, int img_nsec)
                 std::cout<<" SEND_GOAL "<<"\n"; 
                 reset_goal=false;
@@ -1214,7 +1273,7 @@ int main( int argc, char** argv )
               //  state_line<<" GOAL ALREADY SENT "<<"\n";
               //}
             }
-          //}
+          }
         }
         else
         {
@@ -1450,11 +1509,11 @@ int main( int argc, char** argv )
   return 0;
 }
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-move_base_msgs::MoveBaseActionGoal GenerateGoal(int sec, int nsec, double dest_x, double dest_y, double dest_angle)
+move_base_msgs::MoveBaseActionGoal GenerateGoal(int sec, int nsec, double dest_x, double dest_y, double dest_angle, std::string frame)
 {
   //Формируем цель
   move_base_msgs::MoveBaseActionGoal goal;
-  goal.header.frame_id = "odom";
+  goal.header.frame_id = frame;
   goal.header.stamp.sec = sec;
   goal.header.stamp.nsec = nsec;
   goal.goal_id.stamp.sec = sec;
@@ -1462,7 +1521,7 @@ move_base_msgs::MoveBaseActionGoal GenerateGoal(int sec, int nsec, double dest_x
   //goal.goal_id.id = GetCubeId();
   goal.goal.target_pose.header.stamp.sec = sec;
   goal.goal.target_pose.header.stamp.nsec = nsec;
-  goal.goal.target_pose.header.frame_id = "odom";
+  goal.goal.target_pose.header.frame_id = frame;
   goal.goal.target_pose.pose.position.z=0;
   goal.goal.target_pose.pose.position.x = dest_x;
   goal.goal.target_pose.pose.position.y = dest_y;
@@ -1471,10 +1530,10 @@ move_base_msgs::MoveBaseActionGoal GenerateGoal(int sec, int nsec, double dest_x
   return goal;
 }
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-visualization_msgs::Marker GenerateMarker( int secs, int nsecs, int id, double x, double y, double scale, float r, float g, float b, float a)
+visualization_msgs::Marker GenerateMarker( int secs, int nsecs, int id, double x, double y, double scale, float r, float g, float b, float a, std::string frame)
 {
   visualization_msgs::Marker cb;
-  cb.header.frame_id = "odom";
+  cb.header.frame_id = frame;
   cb.header.stamp.sec = secs;
   cb.header.stamp.nsec = nsecs;
   cb.ns = "cube";
@@ -1740,11 +1799,14 @@ const int goalStatusSucceeded = 3;
 const int goalStatusPending = 0;
 int curr_goal_status=goalStatusUnknown;
 */
-void moveBaseStatusCallback(const actionlib_msgs::GoalStatusArray::ConstPtr& msg)
+void moveBaseStatusCallback(const move_base_msgs::MoveBaseActionResult::ConstPtr& msg)
 {
   std::string currGoalId = GetCubeId();
   goalStatusMutex.lock();
-  int status = goalStatusUnknown;
+  curr_goal_status = msg->status.status;
+  goalStatusMessage = msg->status.text;
+  goalStatusMutex.unlock();
+  /*int status = goalStatusUnknown;
   std::string m="";
   for(int i=0; i<msg->status_list.size(); i++)
   {
@@ -1756,8 +1818,8 @@ void moveBaseStatusCallback(const actionlib_msgs::GoalStatusArray::ConstPtr& msg
       break;
     }
   }
-  curr_goal_status = status;
-  goalStatusMutex.unlock();
+  curr_goal_status = status;*/
+  
 }
 
 /*

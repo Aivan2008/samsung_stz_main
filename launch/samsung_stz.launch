@@ -3,7 +3,7 @@
     </node>
     <node name="samsung_stz_main" pkg="samsung_stz_main" type="samsung_stz_main" output="screen" args="">
 <!--Процент высоты картинки выше которого мы объекты не рассматриваем как кубы-->
-        <param name="min_y_position" value="0.6"/>
+        <param name="min_y_position" value="0.65"/>
 <!--Минимальная уверенность детектора ниже которой объекты не рассматриваются-->
         <param name="minimal_conf" value="0.7"/>
 
@@ -48,7 +48,7 @@
 <!-- Положение точки сброса в кадре odom по Y -->
         <param name="drop_point_y" value="0.0"/>
 <!-- Радиус точки сброса в метрах, квадрат со стороной в метр -->
-        <param name="drop_point_radius" value="0.2"/>
+        <param name="drop_point_radius" value="0.5"/>
 
 
 <!-- Способ управления роботом: 1 - по MoveBase/Goal, 2 - по координатам куба своими силами-->
