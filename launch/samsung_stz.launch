@@ -30,8 +30,8 @@
 
 <!-- Минмальное положение по вертикали ("желаемая" позиция куба по Y) -->
         <param name="vertical_desired_pos_rel" value="0.98"/>
-<!-- Ho much time we should move to earlier detected object until say we lost it -->
-        <param name="maximum_lost_frames" value="1000"/>
+<!-- Максимальное время без обнаружений в секундах -->
+        <param name="lost_frame_max_time" value="10"/>
 <!-- Relative to image width, width of corridor where cube must be lost to be gathered-->
         <param name="gathering_area_relative_width" value="0.2"/>
 

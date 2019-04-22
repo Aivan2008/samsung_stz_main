@@ -81,7 +81,9 @@ float drop_point_radius = 0.5; //Квадрат со стороной в мет�
 //Минмальное положение по вертикали ("желаемая" позиция куба по Y)
 float vertical_desired_pos_rel = 0.98;
 //Ho much time we should move to earlier detected object until say we lost it
-int maximum_lost_frames = 500;
+//int maximum_lost_frames = 500;
+//Максимальное время без обнаружений в секундах
+double lost_frame_max_time = 10;
 //Relative to image width, width of corridor where cube must be lost to be gathered
 float gathering_area_relative_width = 0.2;
 
@@ -644,7 +646,7 @@ int main( int argc, char** argv )
     int state = current_state;
     currentStateMutex.unlock();
     std::stringstream state_line;
-    static int lost_counter=0;
+    //static int lost_counter=0;
 
     //static move_base_msgs::MoveBaseActionGoal gathering_goal = move_base_msgs::MoveBaseActionGoal();
 
@@ -652,6 +654,8 @@ int main( int argc, char** argv )
     //static bool reset_goal = false;
 
     static int goalReachedAfterStopSentCounter = 0;
+    static double last_succesful_detection_time = 0.0;
+    
 
 //    ____ _____  _  _____ _____   __  __    _    ____ _   _ ___ _   _ _____ 
 //   / ___|_   _|/ \|_   _| ____| |  \/  |  / \  / ___| | | |_ _| \ | | ____|
@@ -674,6 +678,7 @@ int main( int argc, char** argv )
       }
       else
       {
+        static bool cube_detected = false;
         static bool cube_detected_prev = false;
         //We found confident object, send message
         if(detection_received)
@@ -688,7 +693,7 @@ int main( int argc, char** argv )
                 //  commandPublisher.publish(msg_box_detected);
                 //  ros::spinOnce();
                 //}
-                cube_detected_prev = true;
+                cube_detected = true;
                 /////////////////// CHECK IT!!
                 previousDesiredObjectPosition = currentDesiredObjectPosition;
                 cv::rectangle(debug_img, cv::Point2f(currentDesiredObjectPosition[0], currentDesiredObjectPosition[1]), cv::Point2f(currentDesiredObjectPosition[2],currentDesiredObjectPosition[3]), cv::Scalar(255,255,255), 2);
@@ -699,7 +704,8 @@ int main( int argc, char** argv )
                 //currentStateMutex.unlock();
                 visualization_msgs::Marker cb = GenerateMarker(img_secs,img_nsecs, detections.size()+1, previousDesiredObjectPosition[7], previousDesiredObjectPosition[8], 0.11, 1.0, 1.0, 1.0, 0.9);
                 cubes.markers.push_back(cb);
-                lost_counter=0;
+                //lost_counter=0;
+                last_succesful_detection_time = image_tstamp;
                 
             }
             else
@@ -708,13 +714,14 @@ int main( int argc, char** argv )
               if(currentDesiredObjectPosition.size()>0)
               {
                   state_line<<"Update object ";
-                  lost_counter=0;
+                  //lost_counter=0;
                   previousDesiredObjectPosition = currentDesiredObjectPosition;
                   cv::rectangle(debug_img, cv::Point2f(currentDesiredObjectPosition[0], currentDesiredObjectPosition[1]), 
                                 cv::Point2f(currentDesiredObjectPosition[2],currentDesiredObjectPosition[3]), cv::Scalar(100,100,100), 2);
                   visualization_msgs::Marker cb = GenerateMarker(img_secs,img_nsecs,detections.size()+1, previousDesiredObjectPosition[7], previousDesiredObjectPosition[8], 0.11, 0.5, 0.5, 0.5, 0.9);
                   cubes.markers.push_back(cb);
-                  cube_detected_prev = false;
+                  cube_detected = false;
+                  last_succesful_detection_time = image_tstamp;
               }
               else
               {
@@ -724,23 +731,25 @@ int main( int argc, char** argv )
                     state_line<<"Reset object ";
                     previousDesiredObjectPosition = desired_rect;
                     desiredObjectTrajectoryLength = 1;
-                    lost_counter=0;
+                    //lost_counter=0;
                     visualization_msgs::Marker cb = GenerateMarker(img_secs, img_nsecs, detections.size()+1,previousDesiredObjectPosition[7],previousDesiredObjectPosition[8],0.11, 1.0,1.0,1.0, 0.9);
                     cubes.markers.push_back(cb);
-                    cube_detected_prev = false;
+                    cube_detected = false;
+                    last_succesful_detection_time = image_tstamp;
                   }
                   else //We lost an object and have no new one, as we do not move to it, drop it
                   {
                     print_line = true;
                     state_line<<"Delete object\n";
-                    lost_counter=0;
-                    /*if(cube_detected_prev == true)
+                    //lost_counter=0;
+                    /*if(cube_detected == true)
                     {
                       commandPublisher.publish(msg_box_lost);
                       ros::spinOnce();
                     }*/
                     previousDesiredObjectPosition.clear();
-                    cube_detected_prev = false;
+                    cube_detected = false;
+                    last_succesful_detection_time = image_tstamp;
                   }
               }
             }
@@ -750,34 +759,39 @@ int main( int argc, char** argv )
             if(previousDesiredObjectPosition.size()>0)
             {
               //Показываем вслепую
-              lost_counter+=1;
-              //if(cube_detected_prev == true)
+              //lost_counter+=1;
+              //if(cube_detected == true)
               state_line<<"no frame, use last position ";
               cv::rectangle(debug_img, cv::Point2f(previousDesiredObjectPosition[0], previousDesiredObjectPosition[1]), 
                       cv::Point2f(previousDesiredObjectPosition[2],previousDesiredObjectPosition[3]), cv::Scalar(100, 100, 100), 2);
               visualization_msgs::Marker cb = GenerateMarker( img_secs, img_nsecs, detections.size()+1, previousDesiredObjectPosition[7], previousDesiredObjectPosition[8], 0.11, 0.5, 0.5, 0.5, 0.9);
               cubes.markers.push_back(cb);
-              if(lost_counter > 10)
+              //Не удерживаем сопровождение дольше одной секунды, мы не трекер
+              if((image_tstamp - last_succesful_detection_time)>1)
               {
                 previousDesiredObjectPosition.clear();
-                cube_detected_prev = false;
+                cube_detected = false;
               }
             }
             else
             {
-              /*if(cube_detected_prev == true)
+              /*if(cube_detected == true)
               {
                 commandPublisher.publish(msg_box_lost);
                 ros::spinOnce();
               }*/
               state_line<<" no detection ";
-              cube_detected_prev = false;
+              cube_detected = false;
             }
          }
+         if(cube_detected!=cube_detected_prev)
+         {
           std_msgs::Bool detected;
-          detected.data = cube_detected_prev;
+          detected.data = cube_detected;
           cubeDetectedPublisher.publish(detected);
           ros::spinOnce();
+         }
+         cube_detected_prev = cube_detected;
       }
       
     }
@@ -888,7 +902,8 @@ int main( int argc, char** argv )
             last_color = cv::Scalar(0,255,0);
             visualization_msgs::Marker cb = GenerateMarker( img_secs, img_nsecs, detections.size()+1, previousDesiredObjectPosition[7], previousDesiredObjectPosition[8], 0.11, 0.0, 1.0, 0.0, 0.9);
             cubes.markers.push_back(cb);
-            lost_counter=0;
+            //lost_counter=0;
+            last_succesful_detection_time = image_tstamp;
             update_goal = true;
           }
           else
@@ -904,13 +919,15 @@ int main( int argc, char** argv )
               last_color = cv::Scalar(0,255,0);
               visualization_msgs::Marker cb = GenerateMarker( img_secs, img_nsecs, detections.size()+1, previousDesiredObjectPosition[7], previousDesiredObjectPosition[8], 0.11, 0.0, 0.5, 0.0, 0.9);
               cubes.markers.push_back(cb);
-              lost_counter=0;
+              last_succesful_detection_time = image_tstamp;
+              //lost_counter=0;
             }
             else
             {
-              lost_counter+=1;
-              state_line<<", lost_counter="<<lost_counter<<" ";
-              if(lost_counter>=maximum_lost_frames)
+              //lost_counter+=1;
+              //state_line<<", lost_counter="<<lost_counter<<" ";
+              //if(lost_counter>=maximum_lost_frames)
+              if((image_tstamp - last_succesful_detection_time)>lost_frame_max_time)
               {
                 //ТУТ ОСТАНОВИТЬ РОБОТА!!!!
                 //Тут есть варианты
@@ -958,14 +975,14 @@ int main( int argc, char** argv )
         if(previousDesiredObjectPosition.size()>0)
         {
           //Это тоже ситуация, когда мы едем вслепую, просто либо обнаружения не пришли, это тут, либо пришли но там нет нашего объекта
-          lost_counter+=1;
+          //lost_counter+=1;
           state_line<<"No detections, lost counter on prev desired pos, DROP ";
           destination_object = previousDesiredObjectPosition;
           cv::rectangle(debug_img, cv::Point2f(previousDesiredObjectPosition[0], previousDesiredObjectPosition[1]), 
                   cv::Point2f(previousDesiredObjectPosition[2],previousDesiredObjectPosition[3]), last_color, 2);
           visualization_msgs::Marker cb = GenerateMarker( img_secs, img_nsecs, detections.size()+1, previousDesiredObjectPosition[7], previousDesiredObjectPosition[8], 0.11, 0.0, 1.0, 0.0, 0.9);
           cubes.markers.push_back(cb);
-          if(lost_counter>=maximum_lost_frames)
+          if((image_tstamp - last_succesful_detection_time)>lost_frame_max_time)
           {
             print_line = true;
             state_line<<"No de";
@@ -1528,8 +1545,8 @@ void initParams(ros::NodeHandle* nh_p)
 
     if(!nh_p->hasParam("vertical_desired_pos_rel"))
         nh_p->setParam("vertical_desired_pos_rel",vertical_desired_pos_rel);
-    if(!nh_p->hasParam("maximum_lost_frames"))
-        nh_p->setParam("maximum_lost_frames",maximum_lost_frames);
+    if(!nh_p->hasParam("lost_frame_max_time"))
+        nh_p->setParam("lost_frame_max_time",lost_frame_max_time);
     if(!nh_p->hasParam("gathering_area_relative_width"))
         nh_p->setParam("gathering_area_relative_width",gathering_area_relative_width);
 
@@ -1582,8 +1599,8 @@ void readParams(ros::NodeHandle* nh_p)
 
     if(nh_p->hasParam("vertical_desired_pos_rel"))
         nh_p->getParam("vertical_desired_pos_rel",vertical_desired_pos_rel);
-    if(nh_p->hasParam("maximum_lost_frames"))
-        nh_p->getParam("maximum_lost_frames",maximum_lost_frames);
+    if(nh_p->hasParam("lost_frame_max_time"))
+        nh_p->getParam("lost_frame_max_time",lost_frame_max_time);
     if(nh_p->hasParam("metric_displacement_allowed"))
         nh_p->getParam("metric_displacement_allowed",metric_displacement_allowed);
 
