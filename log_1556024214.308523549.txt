@@ -1,6 +1,0 @@
-Image: 1556024260.656993892
-vel lin x = 0 vel a z = 0
-detections.size() = 0
-State: search
-no prev object
-=====================================
