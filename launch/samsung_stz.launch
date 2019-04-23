@@ -31,7 +31,7 @@
 <!-- Минмальное положение по вертикали ("желаемая" позиция куба по Y) -->
         <param name="vertical_desired_pos_rel" value="0.98"/>
 <!-- Максимальное время без обнаружений в секундах -->
-        <param name="lost_frame_max_time" value="10"/>
+        <param name="lost_frame_max_time" value="20"/>
 <!-- Relative to image width, width of corridor where cube must be lost to be gathered-->
         <param name="gathering_area_relative_width" value="0.2"/>
 
