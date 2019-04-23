@@ -311,6 +311,8 @@ int main( int argc, char** argv )
 /////////////////////////////////////////////////////////////////////////////////////
   ros::Rate loop_rate(100);
   tf::TransformListener listener(ros::Duration(0.3));
+  std::ofstream ofs;
+  ofs.open("log.txt");
   while(ros::ok())
   {
     //Считать параметры на случай если они изменились
@@ -331,6 +333,7 @@ int main( int argc, char** argv )
     int img_nsecs=img_nsec;
     image_tstamp = (double)img_sec + (double)img_nsec/1000000000;
     imageMutex.unlock();
+    
     ///////////////////////////////
     //Без картинки все остальное - бессмысленно
     if(!debug_img.data)
@@ -338,6 +341,7 @@ int main( int argc, char** argv )
         ros::spinOnce();
         continue;
     }
+    ofs<<"Image: "<<img_secs<<"."<<img_nsecs<<"\n";
     //Отдельная копия - для отладочного отображения
     tracking_img = debug_img.clone();
     double calib_mod = 800.0/static_cast<double>(debug_img.cols);
@@ -388,6 +392,7 @@ int main( int argc, char** argv )
     float vel_ang_y = robotVelAngularY;
     float vel_ang_z = robotVelAngularZ;
     robotCmdVelMutex.unlock();
+    //ofs<<"vels: :
     //Расчет разницы по времени между детекцией и текущим кадром
     //delta_img_det = image_tstamp - detector_tstamp;
     ///////////////////////////////
@@ -456,9 +461,10 @@ int main( int argc, char** argv )
     //}
 
     
-
+    ofs<<"detections.size() = "<<detections.size()<<"\n";
     if(detections.size()>0)
     {
+        
         //Расчет пространственных координат куба для каждого прямоугольника
         //Опубликовать расчетные позы кубов
         std::vector<std::vector<double> > current_detections;
@@ -618,6 +624,7 @@ int main( int argc, char** argv )
         }
         //Set if we found at least one good confident object
         new_object_found = desired_rect.size()>0;
+        ofs<<"det conf obj: "<<(int)detectedConfidentObject<<" new_object_found="<<(int)new_object_found<<"\n";
     }
    
 
@@ -655,6 +662,8 @@ int main( int argc, char** argv )
 
     static int goalReachedAfterStopSentCounter = 0;
     static double last_succesful_detection_time = 0.0;
+
+    
     
 
 //    ____ _____  _  _____ _____   __  __    _    ____ _   _ ___ _   _ _____ 
@@ -1450,7 +1459,8 @@ int main( int argc, char** argv )
     ros::spinOnce();
 
 
-    //std::cout<<state_line.str().c_str()<<"\n";
+    ofs<<state_line.str().c_str()<<"\n";
+    ofs<<"=====================================\n";
     //cv::imshow("view", debug_img);
     //cv::waitKey(10);
     sensor_msgs::ImagePtr msg = cv_bridge::CvImage(std_msgs::Header(), "bgr8", debug_img).toImageMsg();
