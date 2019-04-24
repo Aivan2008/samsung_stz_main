@@ -319,7 +319,7 @@ int main( int argc, char** argv )
     }
   }
 
-  listener = new tf::TransformListener(ros::Duration(0.1));
+  listener = new tf::TransformListener(ros::Duration(0.3));
   //std::thread tlThread(TransformListenerThread);
   //Создать окно отображения информации об объектах и сопровождении
   //cv::namedWindow("view");
@@ -345,10 +345,11 @@ int main( int argc, char** argv )
 
   while(ros::ok())
   {
+    
     if(save_debug_info)
       ofs.open(sslf.str(), std::ios_base::app);
     //Считать параметры на случай если они изменились
-    readParams(nh_p);
+    //readParams(nh_p);
 
     //First of all - let's check grapple state
     grappleStateMutex.lock();
@@ -375,6 +376,10 @@ int main( int argc, char** argv )
         continue;
     }
     ofs<<"["<<GetTimeString().c_str()<<"] "<<"Image: "<<img_secs<<"."<<img_nsecs<<"\n";
+    //std::cout<<"["<<GetTimeString().c_str()<<"] "<<"Image: "<<img_secs<<"."<<img_nsecs<<"\n";
+    //loop_rate.sleep();
+    //ros::spinOnce();
+    //continue;
     //Отдельная копия - для отладочного отображения
     tracking_img = debug_img.clone();
     double calib_mod = 800.0/static_cast<double>(debug_img.cols);
@@ -893,11 +898,11 @@ int main( int argc, char** argv )
             ros::spinOnce();
             //Шаг 2. Отменить текущую цель
             ofs<<"["<<GetTimeString().c_str()<<"] "<<"cancel goal\n";
-            CancelCurrentGoal(cancelGoalPublisher, img_secs, img_nsecs);
+            
           }
-          
-          
+
           goalReachedAfterStopSentCounter+=1;
+          CancelCurrentGoal(cancelGoalPublisher, img_secs, img_nsecs);
           
           if((goal_status==2 && goal_status_message=="")||(goalReachedAfterStopSentCounter == 100))
           {
