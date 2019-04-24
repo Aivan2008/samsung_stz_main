@@ -73,11 +73,11 @@ bool useTracker = false;
 const int followModeMoveBaseGoal = 1;
 const int followModeControlByCoord = 2;
 int followMode = followModeMoveBaseGoal;
-//ТОЧКА СБРОСА КУБОВ
+//ТОЧКА СБ� ОСА КУБОВ
 std::mutex dropPointPositionMutex;
 float drop_point_x = 0.0f;
 float drop_point_y = 0.0f;
-//Радиус точки сброса в метрах
+//� адиус точки сброса в метрах
 float drop_point_radius = 0.5; //Квадрат со стороной в метр
 /////////////////////////////////////////////////////////////////////////
 //FOLLOW PARAMETERS
@@ -165,8 +165,8 @@ std::vector<std::vector<float> > receivedRects;
 float detectionRobotX = 0.0f;
 float detectionRobotY = 0.0f;
 float detectionRobotYaw = 0.0f;
-//Время получения КАРТИНКИ на которых было осуществлено обнаружение
-//Время ПО ВРЕМЕНИ РОБОТА!
+//Время получения КА� ТИНКИ на которых было осуществлено обнаружение
+//Время ПО В� ЕМЕНИ � ОБОТА!
 int det_sec;
 int det_nsec;
 //Переменные для определения изменений в разнице по времени между
@@ -205,7 +205,7 @@ const int GATHER_LOST_CUBE = 2;
 std::mutex currentStateMutex;
 int current_state = 0;
 /////////////////////////////////////////////////////////////////////////
-//Служебные РОСовские представители узла
+//Служебные � ОСовские представители узла
 ros::NodeHandle* nh;
 ros::NodeHandle* nh_p;
 /////////////////////////////////////////////////////////////////////////
@@ -411,7 +411,7 @@ int main( int argc, char** argv )
     ofs<<"["<<GetTimeString().c_str()<<"] "<<"vel lin x = "<<vel_lin_x<<" vel a z = "<<vel_ang_z<<"\n";
     robotCmdVelMutex.unlock();
     //ofs<<"["<<GetTimeString().c_str()<<"] "<<"vels: :
-    //Расчет разницы по времени между детекцией и текущим кадром
+    //� асчет разницы по времени между детекцией и текущим кадром
     //delta_img_det = image_tstamp - detector_tstamp;
     ///////////////////////////////
     //!Отладочная инфа рисуется всегда
@@ -483,7 +483,7 @@ int main( int argc, char** argv )
     if(detections.size()>0)
     {
         
-        //Расчет пространственных координат куба для каждого прямоугольника
+        //� асчет пространственных координат куба для каждого прямоугольника
         //Опубликовать расчетные позы кубов
         std::vector<std::vector<double> > current_detections;
         for(int i=0; i<detections.size(); i++)
@@ -859,7 +859,7 @@ int main( int argc, char** argv )
         ofs<<"["<<GetTimeString().c_str()<<"] "<<"grapple active\n";
         if(followMode==followModeMoveBaseGoal)
         {
-          //ТУТ ОСТАНОВИТЬ РОБОТА
+          //ТУТ ОСТАНОВИТЬ � ОБОТА
           //Шаг 1. Блокируем моторы
           if(goalReachedAfterStopSentCounter<=0)
           {
@@ -993,7 +993,7 @@ int main( int argc, char** argv )
               ofs<<"["<<GetTimeString().c_str()<<"] "<<"Lost, delta = "<<(image_tstamp - last_succesful_detection_time)<<"\n";
               if((image_tstamp - last_succesful_detection_time)>lost_frame_max_time)
               {
-                //ТУТ ОСТАНОВИТЬ РОБОТА!!!!
+                //ТУТ ОСТАНОВИТЬ � ОБОТА!!!!
                 //Тут есть варианты
                 //Мы ехали-ехали и потеряли объект, не видим его на том же месте дольше какого-то времени, разумно большого
                 //Потрачено, нет ни текущего ни предыдущего положения, куб потерян
@@ -1103,7 +1103,7 @@ int main( int argc, char** argv )
         //cv::rectangle(debug_img, cv::Point2f(destination_object[0], destination_object[1]), 
         //                cv::Point2f(destination_object[2],destination_object[3]), cv::Scalar(0,255,0), 2)
     
-        //Рассчитываем дельту и угол
+        //� ассчитываем дельту и угол
         static double dest_x = 0;
         static double dest_y = 0;
         static double delta_x = 0;
@@ -1150,7 +1150,7 @@ int main( int argc, char** argv )
           //currentStateMutex.unlock(); 
           if(followMode==followModeMoveBaseGoal)
           {
-            //ТУТ ОСТАНОВИТЬ РОБОТА
+            //ТУТ ОСТАНОВИТЬ � ОБОТА
             //Шаг 1. Блокируем моторы
             if(goalReachedNoCubeStopSentCounter<=0)
             {
@@ -1258,7 +1258,7 @@ int main( int argc, char** argv )
           static bool clear_vel = false;
           //fabs(goal.goal.target_pose.pose.position.x)>0.001||fabs(goal.goal.target_pose.pose.position.y)>0.001||
           bool goal_ok = fabs(goal.goal.target_pose.pose.orientation.z)>0.001||fabs(goal.goal.target_pose.pose.orientation.w)>0.001;
-          ofs<<"["<<GetTimeString().c_str()<<"] "<<(goal_ok?"Quaternion OK":"Quaternion ZERO")<<" "<<(goal_updated?:"Goal updated":"Goal not updated")<<"\n";
+          ofs<<"["<<GetTimeString().c_str()<<"] "<<(goal_ok?"Quaternion OK":"Quaternion ZERO")<<" "<<(goal_updated?"Goal updated":"Goal not updated")<<"\n";
           if(goal_ok)
           {
             if(rotate_to_goal_state)
@@ -1309,7 +1309,7 @@ int main( int argc, char** argv )
                 ros::spinOnce();
                 //if(goal_status!=2 && goal_status_message!="")
                 //{
-                  //ТУТ ОСТАНОВИТЬ РОБОТА
+                  //ТУТ ОСТАНОВИТЬ � ОБОТА
                   //Шаг 1. Блокируем моторы
                   /*if(goalClearCounter<=0)
                   {
@@ -1641,11 +1641,11 @@ visualization_msgs::Marker GenerateMarker( int secs, int nsecs, int id, double x
 }
 /*
 
-//ТОЧКА СБРОСА КУБОВ
+//ТОЧКА СБ� ОСА КУБОВ
 std::mutex dropPointPositionMutex;
 float drop_point_x = 0.0f;
 float drop_point_y = 0.0f;
-//Радиус точки сброса в метрах
+//� адиус точки сброса в метрах
 float drop_point_radius = 0.5; //Квадрат со стороной в метр
 
 */
