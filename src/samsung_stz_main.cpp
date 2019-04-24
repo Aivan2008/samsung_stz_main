@@ -1104,6 +1104,7 @@ int main( int argc, char** argv )
                               
       static move_base_msgs::MoveBaseActionGoal goal = move_base_msgs::MoveBaseActionGoal();
       bool goal_updated = false;
+      static int destinationObjectLostCounter = 0;
       if(destination_object.size()>0 )
       {
         ofs<<"["<<GetTimeString().c_str()<<"] "<<"Dest object exists\n"; 
@@ -1279,8 +1280,8 @@ int main( int argc, char** argv )
               ROS_WARN("Work as usual. Goal status: %d, LOST. Message: %s", goal_status, goal_status_message.c_str());
               break;
           }
-          int move = 0;
-          nh->getParam("/samsung_stz_main/move", move);
+          //int move = 0;
+          //nh->getParam("/samsung_stz_main/move", move);
           
           int da_sign = (delta_angle>0)?(1):(-1);
           static bool clear_vel = false;
@@ -1403,29 +1404,92 @@ int main( int argc, char** argv )
           angular_vel*=angular_speed_multiplier;
           linear_vel*=linear_speed_multiplier;
           state_line<<" ang_vel = "<<angular_vel<<" lin_vel = "<<linear_vel<<" ";
-          static int prev_move=0;
-          int move = 0;
-          nh->getParam("/samsung_stz_main/move", move);
-          if(move==1)
-          {
+          //static int prev_move=0;
+          //int move = 0;
+          //nh->getParam("/samsung_stz_main/move", move);
+          //if(move==1)
+          /*{
             geometry_msgs::Twist twist;
             twist.linear.x = linear_vel;
             twist.angular.z = angular_vel;
             twistPublisher.publish(twist);  
             ros::spinOnce();
-          }
-          if(move == 0 && prev_move ==1)
-          {
+          }*/
+          //if(move == 0 && prev_move ==1)
+          /*{
             std::cout<<"Switch move\n";
             geometry_msgs::Twist twist;
             twistPublisher.publish(twist);  
             ros::spinOnce();
           }
-          prev_move=move;
+          prev_move=move;*/
           
         }
         ros::spinOnce();
       }
+      else
+      {
+          
+        //Считаем что прибыли в точку назначения, раз куб не захватили, то его и нет
+          print_line = true;
+          state_line<<" have no destination object, drop ";
+          ofs<<"["<<GetTimeString().c_str()<<"] "<<"Finish move by destination object completely lost\n"; 
+          //commandPublisher.publish(msg_box_not_taken);
+          //ros::spinOnce();
+          //currentStateMutex.lock();
+          //current_state = STATE_SEARCH;//GATHER_LOST_CUBE
+          //currentStateMutex.unlock(); 
+          if(followMode==followModeMoveBaseGoal)
+          {
+            //ТУТ ОСТАНОВИТЬ РОБОТА
+            //Шаг 1. Блокируем моторы
+            if(destinationObjectLostCounter<=0)
+            {
+              std_msgs::String lock_msg;
+              lock_msg.data = "MOTORS_IS_LOCKED";
+              commandPublisher.publish(lock_msg);
+              ros::spinOnce();
+              //Шаг 2. Отменить текущую цель
+              //CancelCurrentGoal(cancelGoalPublisher, img_secs, img_nsecs);
+            }
+            
+            destinationObjectLostCounter+=1;
+            CancelCurrentGoal(cancelGoalPublisher, img_secs, img_nsecs);
+            
+            if((goal_status==2 && goal_status_message=="")||(destinationObjectLostCounter == 100))
+            {
+              currentStateMutex.lock();
+              current_state = STATE_SEARCH;
+              currentStateMutex.unlock(); 
+              std_msgs::String unlock_msg;
+              std::cout<<"Unlock motors\n";
+              ofs<<"["<<GetTimeString().c_str()<<"] "<<"Unlock motors\n";
+              unlock_msg.data = "MOTORS_IS_UNLOCKED";
+              commandPublisher.publish(unlock_msg);
+              ros::spinOnce();
+              std::cout<<"Send BOX NOT TAKEN\n";
+              ofs<<"["<<GetTimeString().c_str()<<"] "<<"Send BOX NOT TAKEN\n";
+              commandPublisher.publish(msg_box_not_taken);
+              ros::spinOnce();
+            } 
+          }
+          else
+          {
+            geometry_msgs::Twist twist;
+            twistPublisher.publish(twist);  
+            ros::spinOnce();
+            print_line = true;
+            state_line<<" finish move, not found, end ";
+            ofs<<"["<<GetTimeString().c_str()<<"] "<<" finish move, not found, end\n";
+            commandPublisher.publish(msg_box_not_taken);
+            ros::spinOnce();
+            currentStateMutex.lock();
+            current_state = STATE_SEARCH;//GATHER_LOST_CUBE
+            currentStateMutex.unlock(); 
+          }
+          continue;
+      }
+      destinationObjectLostCounter = 0;
     }
     else
     {
@@ -1888,9 +1952,25 @@ int current_state = 0;
 */
 void grappleCallback(const std_msgs::Bool::ConstPtr& msg)
 {
-  grappleStateMutex.lock();
-  grappleHoldCube = msg->data;
-  grappleStateMutex.unlock();
+  static bool last_hold = false;
+  static int hold_counter = 0;
+  
+  bool hold = msg->data;
+  if(hold!=last_hold)
+  {
+    hold_counter=0;
+  }
+  else
+  {
+    hold_counter+=1;
+    if(hold_counter>=3)
+    {
+      grappleStateMutex.lock();
+      grappleHoldCube = hold;
+      grappleStateMutex.unlock();
+    } 
+  }
+  last_hold = hold;
 }
 /*
 std::mutex goalStatusMutex;
