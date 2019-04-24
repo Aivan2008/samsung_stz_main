@@ -4,6 +4,7 @@
 #include <cstring>
 #include <ctime>
 #include <mutex>
+#include <thread>
 #include <list>
 #include <map>
 #include <time.h>
@@ -60,6 +61,8 @@ float max_linear_speed = 0.8f;
 float min_linear_speed = 0.05f;
 float linear_speed_multiplier = 0.5f;
 
+//Флаг вывода в отладочный файл
+int save_debug_info = 1;
 /////////////////////////////////////////////////////////////////////////
 //TRACKING PARAMETERS
 //То есть два кадра подряд надо найти объект рядом чтобы писать сообщения
@@ -143,6 +146,8 @@ void SendGoalToMoveBase(const ros::Publisher &pub, move_base_msgs::MoveBaseActio
 void CancelCurrentGoal(const ros::Publisher &GoalIdPub, int sec, int nsec);
 //
 std::string GetTimeString(); 
+//
+void TransformListenerThread();
 /////////////////////////////////////////////////////////////////////////
 // _____        _        
 //|  __ \      | |       
@@ -246,6 +251,9 @@ float robotVelAngularX = 0.0f;
 float robotVelAngularY = 0.0f;
 float robotVelAngularZ = 0.0f;
 /////////////////////////////////////////////////////////////////////////
+std::mutex transformListenerMutex;
+tf::TransformListener *listener;
+/////////////////////////////////////////////////////////////////////////
 // __  __       _       
 //|  \/  |     (_)      
 //| \  / | __ _ _ _ __  
@@ -295,21 +303,29 @@ int main( int argc, char** argv )
   std::string package_path = ros::package::getPath("samsung_stz_main");
   std::ofstream ofs;
   std::stringstream sslf;
+
+  initParams(nh_p);
+  readParams(nh_p);
   if(!package_path.empty())
   {
     ros::Time t_now = ros::Time::now();    
     std::cout<<"Package path: "<<package_path.c_str()<<"\n";
     
     sslf<<package_path.c_str()<<"/"<<"log_"<<GetTimeString().c_str()<<".txt";
-    ofs.open(sslf.str());
-    ofs.close();
+    if(save_debug_info)
+    {
+      ofs.open(sslf.str());
+      ofs.close();
+    }
   }
 
+  listener = new tf::TransformListener(ros::Duration(0.01));
+  std::thread tlThread(TransformListenerThread);
   //Создать окно отображения информации об объектах и сопровождении
   //cv::namedWindow("view");
   //cv::startWindowThread();
   //Протинциализировать параметры из xml-launch файла
-  initParams(nh_p);
+  
   //Flag, if object we detected is confident (tracked successfully for more than minimalTrajectoryLen)
   bool detectedConfidentObject=false;
   //Flag, if there exists confident object that can be used for initialization
@@ -326,11 +342,11 @@ int main( int argc, char** argv )
 //        |___/             
 /////////////////////////////////////////////////////////////////////////////////////
   ros::Rate loop_rate(100);
-  tf::TransformListener listener(ros::Duration(0.3));
 
   while(ros::ok())
   {
-    ofs.open(sslf.str(), std::ios_base::app);
+    if(save_debug_info)
+      ofs.open(sslf.str(), std::ios_base::app);
     //Считать параметры на случай если они изменились
     readParams(nh_p);
 
@@ -435,10 +451,10 @@ int main( int argc, char** argv )
 
     bool detection_received = false;
 
-    float min_map_x = drop_point_x - drop_point_radius;
+    /*float min_map_x = drop_point_x - drop_point_radius;
     float max_map_x = drop_point_x + drop_point_radius;
     float min_map_y = drop_point_y - drop_point_radius;
-    float max_map_y = drop_point_y + drop_point_radius;
+    float max_map_y = drop_point_y + drop_point_radius;*/
 
     /*ros::Time t_now = ros::Time::now();
 
@@ -461,7 +477,7 @@ int main( int argc, char** argv )
     home_marker.header.stamp.nsec = img_nsecs;
     home_marker.ns = "home_point";
     home_marker.id = 0;
-    home_marker.type = 1;//CUBE
+    home_marker.type = 3;//CYLINDER
     home_marker.pose.position.x = drop_point_x;
     home_marker.pose.position.y = drop_point_y;
     home_marker.scale.x = drop_point_radius*2.0;
@@ -533,7 +549,9 @@ int main( int argc, char** argv )
               double map_y = 0;
               try
               {
-                listener.transformPoint("map", ros::Time(0), cube_point, "camera", cube_point_map); 
+                transformListenerMutex.lock();
+                listener->transformPoint("map", ros::Time(0), cube_point, "camera", cube_point_map);
+                transformListenerMutex.unlock(); 
                 map_x = cube_point_map.point.x;
                 map_y = cube_point_map.point.y;
                 ofs<<"["<<GetTimeString().c_str()<<"] "<<"Map pos success\n";
@@ -554,8 +572,12 @@ int main( int argc, char** argv )
 
               //r[3] = map_x;
               //r[4] = map_y;
+
+              double dx = fabs(drop_point_x - map_x);
+              double dy = fabs(drop_point_y - map_y);
+              double distance2 = dx*dx+dy*dy;
               
-              if (!((map_x>min_map_x)&&(map_x<max_map_x)&&(map_y>min_map_y)&&(map_y<max_map_y)))
+              if (distance2>(drop_point_radius*drop_point_radius))
               {
                 det[0] = xmin;
                 det[1] = ymin;
@@ -1258,10 +1280,10 @@ int main( int argc, char** argv )
           static bool clear_vel = false;
           //fabs(goal.goal.target_pose.pose.position.x)>0.001||fabs(goal.goal.target_pose.pose.position.y)>0.001||
           bool goal_ok = fabs(goal.goal.target_pose.pose.orientation.z)>0.001||fabs(goal.goal.target_pose.pose.orientation.w)>0.001;
-          ofs<<"["<<GetTimeString().c_str()<<"] "<<(goal_ok?"Quaternion OK":"Quaternion ZERO")<<" "<<(goal_updated?:"Goal updated":"Goal not updated")<<"\n";
+          ofs<<"["<<GetTimeString().c_str()<<"] "<<(goal_ok?"Quaternion OK":"Quaternion ZERO")<<" "<<(goal_updated?"Goal updated":"Goal not updated")<<"\n";
           if(goal_ok)
           {
-            if(rotate_to_goal_state)
+            /*if(rotate_to_goal_state)
             {
                 //ЗАметка: Если объект в задней полусфере, надо сначала отдавать команды только на поворот, а когда будет острый угол хотя бы
                 //тогда уже и по положению управлять
@@ -1289,75 +1311,46 @@ int main( int argc, char** argv )
               }
             }  
             else
+            {*/
+            static int goalClearCounter = 0;
+            if(fabs(delta_angle)>M_PI/(18))
             {
-              static int goalClearCounter = 0;
-              if(fabs(delta_angle)>M_PI/(18))
+              CancelCurrentGoal(cancelGoalPublisher, img_secs, img_nsecs);
+              geometry_msgs::Twist twist;
+              twist.linear.x = vel_lin_x;
+              twist.linear.y = vel_lin_y;
+              twist.linear.z = vel_lin_z;
+              twist.angular.x = vel_ang_x;
+              twist.angular.y = vel_ang_y;
+              twist.angular.z = vel_ang_z;
+              
+              twist.angular.z = da_sign*std::max<double>(max_angular_speed, fabs(delta_angle))*angular_speed_multiplier;
+              std::cout<<"Rotate: "<< twist.angular.z <<"\n";
+              ofs<<"["<<GetTimeString().c_str()<<"] "<<"Rotate: "<< twist.angular.z <<"\n";
+              twistPublisher.publish(twist);  
+              ros::spinOnce();
+            }
+            else
+            { 
+              if(goal_updated)
               {
-                CancelCurrentGoal(cancelGoalPublisher, img_secs, img_nsecs);
-                geometry_msgs::Twist twist;
-                twist.linear.x = vel_lin_x;
-                twist.linear.y = vel_lin_y;
-                twist.linear.z = vel_lin_z;
-                twist.angular.x = vel_ang_x;
-                twist.angular.y = vel_ang_y;
-                twist.angular.z = vel_ang_z;
-                
-                twist.angular.z = da_sign*std::min<double>(max_angular_speed, fabs(delta_angle))*angular_speed_multiplier;
-                std::cout<<"Rotate: "<< twist.angular.z <<"\n";
-                ofs<<"["<<GetTimeString().c_str()<<"] "<<"Rotate: "<< twist.angular.z <<"\n";
-                twistPublisher.publish(twist);  
-                ros::spinOnce();
-                //if(goal_status!=2 && goal_status_message!="")
-                //{
-                  //ТУТ ОСТАНОВИТЬ РОБОТА
-                  //Шаг 1. Блокируем моторы
-                  /*if(goalClearCounter<=0)
-                  {
-                    ofs<<"["<<GetTimeString().c_str()<<"] "<<"lock motors\n";
-                    std_msgs::String lock_msg;
-                    lock_msg.data = "MOTORS_IS_LOCKED";
-                    commandPublisher.publish(lock_msg);
-                    ros::spinOnce();
-                    //Шаг 2. Отменить текущую цель
-                    ofs<<"["<<GetTimeString().c_str()<<"] "<<"cancel goal\n";
-                    CancelCurrentGoal(cancelGoalPublisher, img_secs, img_nsecs);
-                  }
-                  
-                  
-                  goalClearCounter+=1;
-                  
-                  if((goal_status==2 && goal_status_message=="")||(goalClearCounter == 100))
-                  {
-                    ofs<<"["<<GetTimeString().c_str()<<"] "<<"stop goal, switch to rotate ="<<goal_status<<" msg="<<goal_status_message<<" cntr="<<goalReachedAfterStopSentCounter<<"\n";
-                    std_msgs::String unlock_msg;
-                    unlock_msg.data = "MOTORS_IS_UNLOCKED";
-                    commandPublisher.publish(unlock_msg);
-                    ros::spinOnce();
-                    rotate_to_goal_state=true;
-                  }*/
-                //}
-              }
-              else
-              { 
-                if(goal_updated)
-                {
-                  goalClearCounter=0;
-                // if(reset_goal == true)
-                //{void SendGoalToMoveBase(const ros::Publisher &pub, move_base_msgs::MoveBaseActionGoal goal, int img_sec, int img_nsec)
-                  std::cout<<" SEND_GOAL "<<"\n";
-                  ofs<<"["<<GetTimeString().c_str()<<"] "<<"send goal\n"; 
-                  //reset_goal=false;
-                  SendGoalToMoveBase(moveBaseGoalPublisher, goal, img_secs, img_nsecs);
-                  //moveBaseGoalPublisher.publish(goal); 
-                  //ros::spinOnce();
-                //}
-                //else
-                //{
-                //  state_line<<" GOAL ALREADY SENT "<<"\n";
-                //}
-                }
+                goalClearCounter=0;
+              // if(reset_goal == true)
+              //{void SendGoalToMoveBase(const ros::Publisher &pub, move_base_msgs::MoveBaseActionGoal goal, int img_sec, int img_nsec)
+                std::cout<<" SEND_GOAL "<<"\n";
+                ofs<<"["<<GetTimeString().c_str()<<"] "<<"send goal\n"; 
+                //reset_goal=false;
+                SendGoalToMoveBase(moveBaseGoalPublisher, goal, img_secs, img_nsecs);
+                //moveBaseGoalPublisher.publish(goal); 
+                //ros::spinOnce();
+              //}
+              //else
+              //{
+              //  state_line<<" GOAL ALREADY SENT "<<"\n";
+              //}
               }
             }
+            //}
           }
         }
         else
@@ -1593,8 +1586,9 @@ int main( int argc, char** argv )
     ros::spinOnce();
     ofs.close();
   }
-  
-  cv::destroyWindow("view");
+  tlThread.join();
+  std::cout<<"Thread finished successfully\n";
+  //cv::destroyWindow("view");
   return 0;
 }
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -1702,6 +1696,10 @@ void initParams(ros::NodeHandle* nh_p)
 
     if(!nh_p->hasParam("follow_mode"))
         nh_p->setParam("follow_mode",followMode);
+
+    if(!nh_p->hasParam("save_debug_info"))
+        nh_p->setParam("save_debug_info",save_debug_info);
+    
 }
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 //Прочитать значения параметров
@@ -1756,6 +1754,9 @@ void readParams(ros::NodeHandle* nh_p)
 
     if(nh_p->hasParam("follow_mode"))
         nh_p->getParam("follow_mode",followMode);
+
+    if(nh_p->hasParam("save_debug_info"))
+        nh_p->getParam("save_debug_info",save_debug_info);
 
 }
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -2027,4 +2028,21 @@ std::string GetTimeString()
     strftime(buf, sizeof(buf), "%Y-%m-%d.%X", &tstruct);
 
     return buf;
+}
+/*
+std::mutex transformListenerMutex;
+tf::TransformListener *listener;
+*/
+void TransformListenerThread()
+{
+  ros::Rate rate(100);
+  while(ros::ok())
+  {
+    transformListenerMutex.lock();
+    listener->waitForTransform("/camera", "/map",
+                              ros::Time(0), ros::Duration(0.1));
+    transformListenerMutex.unlock();
+    rate.sleep();
+    
+  }
 }
