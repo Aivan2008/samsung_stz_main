@@ -871,6 +871,7 @@ int main( int argc, char** argv )
          {
           std_msgs::Bool detected;
           detected.data = cube_detected;
+          ofs<<"["<<GetTimeString().c_str()<<"] "<<"Publish detection state: "<<(cube_detected?"detected":"lost")<<"\n";
           cubeDetectedPublisher.publish(detected);
           ros::spinOnce();
          }
@@ -1152,7 +1153,7 @@ int main( int argc, char** argv )
         { 
           print_line = true;
           state_line<<" gen goal"<<"\n";
-          ofs<<"["<<GetTimeString().c_str()<<"] "<<"Generate new goal\n"; 
+          ofs<<"["<<GetTimeString().c_str()<<"] "<<"Generate new goal nx="<<nx<<" ny="<<ny<<"na = "<<na<<"\n"; 
           double na = destination_object[6];
           double nx = destination_object[9]+follow_meter_length*cos(na);
           double ny = destination_object[10]+follow_meter_length*sin(-na);
@@ -1165,7 +1166,8 @@ int main( int argc, char** argv )
         debugGoalPosePublisher.publish(gp);
         ros::spinOnce();
         static int goalReachedNoCubeStopSentCounter =0;
-        ofs<<"["<<GetTimeString().c_str()<<"] "<<"drop_goal = "<<(int)drop_goal<<" goal_status="<<goal_status<<" Delta x = "<<delta_x<<" Delta y = "<<delta_y<<" Delta Angle = "<<delta_angle<<"\n";
+        ofs<<"["<<GetTimeString().c_str()<<"] "<< "odom x = "<<odom_x<<" y = "<<odom_y<<" yaw = "<<odom_yaw<<"\n";
+        ofs<<"["<<GetTimeString().c_str()<<"] "<<"drop_goal = "<<(int)drop_goal<<" goal_status="<<goal_status<<" Delta x = "<<delta_x<<" Delta y = "<<delta_y<<" Delta Angle = "<<-delta_angle<<"\n";
         if(drop_goal||goal_status==3||(fabs(delta_x)<gathering_delta_pos_allowed && fabs(delta_y)<gathering_delta_pos_allowed))//&& fabs(delta_angle)<gathering_delta_angle_allowed
         {
           //Считаем что прибыли в точку назначения, раз куб не захватили, то его и нет
@@ -1319,8 +1321,9 @@ int main( int argc, char** argv )
             }  
             else
             {*/
-            static int goalClearCounter = 0;
-            if(fabs(delta_angle)>M_PI/(18))
+            //static int goalClearCounter = 0;
+            static bool previous_rotation = false;
+            if((previous_rotation&&(fabs(delta_angle)>M_PI/(18*2)))||(!previous_rotation&&(fabs(delta_angle)>M_PI/(18/2))))
             {
               CancelCurrentGoal(cancelGoalPublisher, img_secs, img_nsecs);
               geometry_msgs::Twist twist;
@@ -1336,15 +1339,23 @@ int main( int argc, char** argv )
               ofs<<"["<<GetTimeString().c_str()<<"] "<<"Rotate: "<< twist.angular.z <<"\n";
               twistPublisher.publish(twist);  
               ros::spinOnce();
+              previous_rotation = true;
             }
             else
             { 
+              if(previous_rotation)
+              {
+                ofs<<"["<<GetTimeString().c_str()<<"] "<<"Switched to move_base, send 0 vel"<<"\n";
+                geometry_msgs::Twist twist;
+                twistPublisher.publish(twist);  
+                ros::spinOnce();
+              }
               if(goal_updated)
               {
-                goalClearCounter=0;
+                //goalClearCounter=0;
               // if(reset_goal == true)
               //{void SendGoalToMoveBase(const ros::Publisher &pub, move_base_msgs::MoveBaseActionGoal goal, int img_sec, int img_nsec)
-                std::cout<<" SEND_GOAL "<<"\n";
+                //std::cout<<" SEND_GOAL "<<"\n";
                 ofs<<"["<<GetTimeString().c_str()<<"] "<<"send goal\n"; 
                 //reset_goal=false;
                 SendGoalToMoveBase(moveBaseGoalPublisher, goal, img_secs, img_nsecs);
@@ -1356,6 +1367,7 @@ int main( int argc, char** argv )
               //  state_line<<" GOAL ALREADY SENT "<<"\n";
               //}
               }
+              previous_rotation=false;
             }
             //}
           }
