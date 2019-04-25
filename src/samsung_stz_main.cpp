@@ -283,7 +283,7 @@ int main( int argc, char** argv )
   ros::Subscriber sub_detector_res = nh->subscribe("/samsung/BBoxes", 1, detectorCallback);
   ros::Subscriber sub_odom = nh->subscribe("/kursant_driver/odom", 1, odomCallback);
   ros::Subscriber sub_grapple = nh->subscribe("/box_sensor/is_sensed", 1, grappleCallback);
-  ros::Subscriber sub_command = nh->subscribe("/kursant_driver/command", 1, commandCallback);
+  ros::Subscriber sub_command = nh->subscribe("/kursant_driver/command", 5, commandCallback);
   ros::Subscriber sub_move_base_status = nh->subscribe("/move_base/result", 1, moveBaseStatusCallback);
   ros::Subscriber sub_cmdvel = nh->subscribe("/kursant_driver/cmd_vel", 1, cmdVelCallback);
   //ros::Subscriber sub_drop_point_pos = nh->subscribe("/samsung/drop_point", 1, dropPointPositionCallback);
@@ -1919,6 +1919,11 @@ void odomCallback(const nav_msgs::Odometry::ConstPtr& msg)
 void commandCallback(const std_msgs::String::ConstPtr& msg)
 {
   ros::Publisher tp = nh->advertise<geometry_msgs::Twist>("/state_machine/cmd_vel", 100);
+  ros::Publisher debugCommandPub = nh->advertise<std_msgs::String>("/samsung_stz_main/command_debug", 20);
+  std_msgs::String dmsg;
+  dmsg.data = std::string("debug_")+msg->data;
+  debugCommandPub.publish(dmsg);
+  ros::spinOnce();
   std::lock_guard<std::mutex> cmd_guard(currentStateMutex);
   if(msg->data==std::string("GATHER_CUBE") && current_state == STATE_SEARCH)
   {
