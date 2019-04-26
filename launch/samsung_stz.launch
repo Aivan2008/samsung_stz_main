@@ -48,7 +48,7 @@
 <!-- Положение точки сброса в кадре odom по Y -->
         <param name="drop_point_y" value="0.0"/>
 <!-- Радиус точки сброса в метрах, квадрат со стороной в метр -->
-        <param name="drop_point_radius" value="0.5"/>
+        <param name="drop_point_radius" value="1.0"/>
 
 
 <!-- Способ управления роботом: 1 - по MoveBase/Goal, 2 - по координатам куба своими силами-->
