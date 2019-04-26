@@ -376,6 +376,7 @@ int main( int argc, char** argv )
     {
         ros::spinOnce();
         ofs<<"["<<GetTimeString().c_str()<<"] "<<"No image\n";
+        ofs.close();
         continue;
     }
     ofs<<"["<<GetTimeString().c_str()<<"] "<<"Image: "<<img_secs<<"."<<img_nsecs<<"\n";
@@ -997,6 +998,7 @@ int main( int argc, char** argv )
         }
         print_line = true;
         state_line<<"cube grappled ";
+        ofs.close();
         continue;
       }
         firstStopSentMessage = true;
@@ -1254,6 +1256,7 @@ int main( int argc, char** argv )
             current_state = STATE_SEARCH;//GATHER_LOST_CUBE
             currentStateMutex.unlock(); 
           }
+          ofs.close();
           continue;
         }
         goalReachedNoCubeStopSentFirst = true;
@@ -1528,6 +1531,7 @@ int main( int argc, char** argv )
             current_state = STATE_SEARCH;//GATHER_LOST_CUBE
             currentStateMutex.unlock(); 
           }
+          ofs.close();
           continue;
       }
       destinationObjectLostFirst=true;
