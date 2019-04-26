@@ -251,8 +251,11 @@ float robotVelAngularX = 0.0f;
 float robotVelAngularY = 0.0f;
 float robotVelAngularZ = 0.0f;
 /////////////////////////////////////////////////////////////////////////
-std::mutex transformListenerMutex;
-tf::TransformListener *listener;
+std::mutex cameraTransformMutex;
+double cameraTimeStamp = 0.0;
+double cameraX = 0.0;
+double cameraY = 0.0;
+double cameraYaw = 0.0;
 /////////////////////////////////////////////////////////////////////////
 // __  __       _       
 //|  \/  |     (_)      
@@ -319,8 +322,8 @@ int main( int argc, char** argv )
     }
   }
 
-  listener = new tf::TransformListener(ros::Duration(0.3));
-  //std::thread tlThread(TransformListenerThread);
+  //listener = new tf::TransformListener(ros::Duration(0.3));
+  std::thread tlThread(TransformListenerThread);
   //Создать окно отображения информации об объектах и сопровождении
   //cv::namedWindow("view");
   //cv::startWindowThread();
@@ -434,6 +437,13 @@ int main( int argc, char** argv )
     //ofs<<"["<<GetTimeString().c_str()<<"] "<<"vels: :
     //Расчет разницы по времени между детекцией и текущим кадром
     //delta_img_det = image_tstamp - detector_tstamp;
+    ///////////////////////////////
+    cameraTransformMutex.lock();
+    double camera_tstamp = cameraTimeStamp;
+    double camera_x = cameraX;
+    double camera_y = cameraY;
+    double camera_yaw = cameraYaw;
+    cameraTransformMutex.unlock();
     ///////////////////////////////
     //!Отладочная инфа рисуется всегда
     //Исходя из заданных в параметрах отосительных координат рассчитать положение "линии горизонта" и
@@ -552,7 +562,18 @@ int main( int argc, char** argv )
               cube_point.header.frame_id = "camera";
               double map_x = 0;
               double map_y = 0;
-              try
+              //!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+              if((image_tstamp - camera_tstamp)<=2.0)
+              {
+                map_x = camera_x + (Z)*cos(camera_yaw) + X*sin(camera_yaw);
+                map_y = camera_y + (Z)*sin(camera_yaw) - X*cos(camera_yaw);
+              }
+              else
+              {
+                ROS_ERROR("Too last tf %f seconds ago, skip cube pose calculation", (image_tstamp - camera_tstamp));
+              }
+              
+              /*try
               {
                 //transformListenerMutex.lock();
                 listener->transformPoint("map", ros::Time(0), cube_point, "camera", cube_point_map);
@@ -567,7 +588,8 @@ int main( int argc, char** argv )
                 ros::Duration(0.01).sleep();
                 transformListenerMutex.unlock(); 
                 continue;
-              }
+              }*/
+              //!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 
               
 
@@ -725,7 +747,9 @@ int main( int argc, char** argv )
     bool print_line = false;
     //static bool reset_goal = false;
 
-    static int goalReachedAfterStopSentCounter = 0;
+    //static int goalReachedAfterStopSentCounter = 0;
+    static bool firstStopSentMessage = true;
+    static double goalReachedAfterStopSentTime = 0.0;
     static double last_succesful_detection_time = 0.0;
 
     
@@ -739,7 +763,8 @@ int main( int argc, char** argv )
 
     if(state == STATE_SEARCH)
     {
-      goalReachedAfterStopSentCounter=0;
+      //goalReachedAfterStopSentCounter=0;
+      firstStopSentMessage = true;
       state_line<<"State: search, ";
       ofs<<"["<<GetTimeString().c_str()<<"] "<<"State: search\n";
       if(grapple_hold_cube)
@@ -890,7 +915,7 @@ int main( int argc, char** argv )
         {
           //ТУТ ОСТАНОВИТЬ РОБОТА
           //Шаг 1. Блокируем моторы
-          if(goalReachedAfterStopSentCounter<=0)
+          if(firstStopSentMessage)
           {
             ofs<<"["<<GetTimeString().c_str()<<"] "<<"lock motors\n";
             std_msgs::String lock_msg;
@@ -899,15 +924,16 @@ int main( int argc, char** argv )
             ros::spinOnce();
             //Шаг 2. Отменить текущую цель
             ofs<<"["<<GetTimeString().c_str()<<"] "<<"cancel goal\n";
-            
+            firstStopSentMessage = false;
+            goalReachedAfterStopSentTime = image_tstamp;
           }
 
-          goalReachedAfterStopSentCounter+=1;
+          //goalReachedAfterStopSentCounter+=1;
           CancelCurrentGoal(cancelGoalPublisher, img_secs, img_nsecs);
           
-          if((goal_status==2 && goal_status_message=="")||(goalReachedAfterStopSentCounter == 100))
+          if((goal_status==2 && goal_status_message=="")||((image_tstamp - goalReachedAfterStopSentTime)>5.0))
           {
-            ofs<<"["<<GetTimeString().c_str()<<"] "<<"send cube is taken goal_status="<<goal_status<<" msg="<<goal_status_message<<" cntr="<<goalReachedAfterStopSentCounter<<"\n";
+            ofs<<"["<<GetTimeString().c_str()<<"] "<<"send cube is taken goal_status="<<goal_status<<" msg="<<goal_status_message<<" dtime="<<(image_tstamp - goalReachedAfterStopSentTime)<<"\n";
             currentStateMutex.lock();
             current_state = STATE_SEARCH;
             currentStateMutex.unlock(); 
@@ -928,34 +954,34 @@ int main( int argc, char** argv )
               commandPublisher.publish(msg_box_taken);
               break;
             case goalStatusPending:
-              ROS_WARN("Goal not reached yet. STATUS: %d, PENDING. Counter: %d Message: %s", goal_status, goalReachedAfterStopSentCounter, goal_status_message.c_str());
+              ROS_WARN("Goal not reached yet. STATUS: %d, PENDING. DTime: %f Message: %s", goal_status, (image_tstamp - goalReachedAfterStopSentTime), goal_status_message.c_str());
               break;
             case goalStatusActive:
-              ROS_INFO("Goal not reached yet. STATUS: %d, ACTIVE. Counter: %d Message: %s", goal_status, goalReachedAfterStopSentCounter, goal_status_message.c_str()); 
+              ROS_INFO("Goal not reached yet. STATUS: %d, ACTIVE. DTime: %f Message: %s", goal_status, (image_tstamp - goalReachedAfterStopSentTime), goal_status_message.c_str()); 
               break;
             case goalStatusPreempted:
-              ROS_WARN("Goal not reached yet. STATUS: %d, PREEMPTED. Counter: %d Message: %s", goal_status, goalReachedAfterStopSentCounter, goal_status_message.c_str());
+              ROS_WARN("Goal not reached yet. STATUS: %d, PREEMPTED. DTime: %f Message: %s", goal_status, (image_tstamp - goalReachedAfterStopSentTime), goal_status_message.c_str());
               break;
             case goalStatusSucceeded:
-              ROS_INFO("Goal not reached yet. STATUS: %d, SUCCEEDED. Counter: %d Message: %s", goal_status, goalReachedAfterStopSentCounter, goal_status_message.c_str()); 
+              ROS_INFO("Goal not reached yet. STATUS: %d, SUCCEEDED. DTime: %f Message: %s", goal_status, (image_tstamp - goalReachedAfterStopSentTime), goal_status_message.c_str()); 
               break;
             case goalStatusAborted:
-              ROS_ERROR("Goal not reached yet. STATUS: %d, ABORTED. Counter: %d Message: %s", goal_status, goalReachedAfterStopSentCounter, goal_status_message.c_str()); 
+              ROS_ERROR("Goal not reached yet. STATUS: %d, ABORTED. DTime: %f Message: %s", goal_status, (image_tstamp - goalReachedAfterStopSentTime), goal_status_message.c_str()); 
               break;
             case goalStatusRejected:
-              ROS_ERROR("Goal not reached yet. STATUS: %d, REJECTED. Counter: %d Message: %s", goal_status, goalReachedAfterStopSentCounter, goal_status_message.c_str()); 
+              ROS_ERROR("Goal not reached yet. STATUS: %d, REJECTED. DTime: %f Message: %s", goal_status, (image_tstamp - goalReachedAfterStopSentTime), goal_status_message.c_str()); 
               break;
             case goalStatusPreeempting:
-              ROS_WARN("Goal not reached yet. STATUS: %d, PREEMPTING. Counter: %d Message: %s", goal_status, goalReachedAfterStopSentCounter, goal_status_message.c_str());
+              ROS_WARN("Goal not reached yet. STATUS: %d, PREEMPTING. DTime: %f Message: %s", goal_status, (image_tstamp - goalReachedAfterStopSentTime), goal_status_message.c_str());
               break;
             case goalStatusRecalling:
-              ROS_WARN("Goal not reached yet. STATUS: %d, RECALLING. Counter: %d Message: %s", goal_status, goalReachedAfterStopSentCounter, goal_status_message.c_str());
+              ROS_WARN("Goal not reached yet. STATUS: %d, RECALLING. DTime: %f Message: %s", goal_status, (image_tstamp - goalReachedAfterStopSentTime), goal_status_message.c_str());
               break;
             case goalStatusRecalled:
-              ROS_WARN("Goal not reached yet. STATUS: %d, RECALLED. Counter: %d Message: %s", goal_status, goalReachedAfterStopSentCounter, goal_status_message.c_str());
+              ROS_WARN("Goal not reached yet. STATUS: %d, RECALLED. DTime: %f Message: %s", goal_status, (image_tstamp - goalReachedAfterStopSentTime), goal_status_message.c_str());
               break;
             case goalStatusLost:
-              ROS_WARN("Goal not reached yet. STATUS: %d, LOST. Counter: %d Message: %s", goal_status, goalReachedAfterStopSentCounter, goal_status_message.c_str());
+              ROS_WARN("Goal not reached yet. STATUS: %d, LOST. DTime: %f Message: %s", goal_status, (image_tstamp - goalReachedAfterStopSentTime), goal_status_message.c_str());
               break;
           }
         }
@@ -973,7 +999,7 @@ int main( int argc, char** argv )
         state_line<<"cube grappled ";
         continue;
       }
-        goalReachedAfterStopSentCounter = 0;
+        firstStopSentMessage = true;
         //Here we designate an object to which we want t0
         //We found confident object, send message
         std::vector<double> destination_object;
@@ -1105,7 +1131,8 @@ int main( int argc, char** argv )
                               
       static move_base_msgs::MoveBaseActionGoal goal = move_base_msgs::MoveBaseActionGoal();
       bool goal_updated = false;
-      static int destinationObjectLostCounter = 0;
+      static bool destinationObjectLostFirst = true;;
+      static bool destinationObjectLostTime = 0.0;
       if(destination_object.size()>0 )
       {
         ofs<<"["<<GetTimeString().c_str()<<"] "<<"Dest object exists\n"; 
@@ -1153,10 +1180,11 @@ int main( int argc, char** argv )
         { 
           print_line = true;
           state_line<<" gen goal"<<"\n";
-          ofs<<"["<<GetTimeString().c_str()<<"] "<<"Generate new goal nx="<<nx<<" ny="<<ny<<"na = "<<na<<"\n"; 
+          
           double na = destination_object[6];
           double nx = destination_object[9]+follow_meter_length*cos(na);
           double ny = destination_object[10]+follow_meter_length*sin(-na);
+          ofs<<"["<<GetTimeString().c_str()<<"] "<<"Generate new goal nx="<<nx<<" ny="<<ny<<"na = "<<na<<"\n"; 
           goal = GenerateGoal(img_secs, img_nsecs, nx, ny, -na, "camera");
           goal_updated=true;
         }
@@ -1165,7 +1193,8 @@ int main( int argc, char** argv )
         gp.pose = goal.goal.target_pose.pose;
         debugGoalPosePublisher.publish(gp);
         ros::spinOnce();
-        static int goalReachedNoCubeStopSentCounter =0;
+        static bool goalReachedNoCubeStopSentFirst = true;
+        static double goalReachedNoCubeStopSentTime =0;
         ofs<<"["<<GetTimeString().c_str()<<"] "<< "odom x = "<<odom_x<<" y = "<<odom_y<<" yaw = "<<odom_yaw<<"\n";
         ofs<<"["<<GetTimeString().c_str()<<"] "<<"drop_goal = "<<(int)drop_goal<<" goal_status="<<goal_status<<" Delta x = "<<delta_x<<" Delta y = "<<delta_y<<" Delta Angle = "<<-delta_angle<<"\n";
         if(drop_goal||goal_status==3||(fabs(delta_x)<gathering_delta_pos_allowed && fabs(delta_y)<gathering_delta_pos_allowed))//&& fabs(delta_angle)<gathering_delta_angle_allowed
@@ -1183,7 +1212,7 @@ int main( int argc, char** argv )
           {
             //ТУТ ОСТАНОВИТЬ РОБОТА
             //Шаг 1. Блокируем моторы
-            if(goalReachedNoCubeStopSentCounter<=0)
+            if(goalReachedNoCubeStopSentFirst)
             {
               std_msgs::String lock_msg;
               lock_msg.data = "MOTORS_IS_LOCKED";
@@ -1191,11 +1220,11 @@ int main( int argc, char** argv )
               ros::spinOnce();
               //Шаг 2. Отменить текущую цель
               CancelCurrentGoal(cancelGoalPublisher, img_secs, img_nsecs);
+              goalReachedNoCubeStopSentFirst = false;
+              goalReachedNoCubeStopSentTime = image_tstamp;
             }
-            
-            goalReachedNoCubeStopSentCounter+=1;
-            
-            if((goal_status==2 && goal_status_message=="")||(goalReachedNoCubeStopSentCounter == 100))
+            CancelCurrentGoal(cancelGoalPublisher, img_secs, img_nsecs);
+            if((goal_status==2 && goal_status_message=="")||((image_tstamp - goalReachedNoCubeStopSentTime)>5.0))
             {
               currentStateMutex.lock();
               current_state = STATE_SEARCH;
@@ -1227,7 +1256,7 @@ int main( int argc, char** argv )
           }
           continue;
         }
-        goalReachedNoCubeStopSentCounter=0;
+        goalReachedNoCubeStopSentFirst = true;
 
         if(followMode==followModeMoveBaseGoal)
         {
@@ -1238,7 +1267,6 @@ int main( int argc, char** argv )
             UpdateCubeId();
           }*/
           //std::stringstream message;
-          //message<<"Goal not reached yet. STATUS: "<<goal_status<< " COUNTER: "<<goalReachedAfterStopSentCounter<<" Message: "<<goal_status_message.c_str();
           ofs<<"["<<GetTimeString().c_str()<<"] "<<"Goal status: "<<  goal_status<<" msg: "<<goal_status_message.c_str()<<"\n";
           switch(goal_status)
           {
@@ -1455,7 +1483,7 @@ int main( int argc, char** argv )
           {
             //ТУТ ОСТАНОВИТЬ РОБОТА
             //Шаг 1. Блокируем моторы
-            if(destinationObjectLostCounter<=0)
+            if(destinationObjectLostFirst)
             {
               std_msgs::String lock_msg;
               lock_msg.data = "MOTORS_IS_LOCKED";
@@ -1463,12 +1491,13 @@ int main( int argc, char** argv )
               ros::spinOnce();
               //Шаг 2. Отменить текущую цель
               //CancelCurrentGoal(cancelGoalPublisher, img_secs, img_nsecs);
+              destinationObjectLostFirst=false;
+              destinationObjectLostTime = image_tstamp;
             }
-            
-            destinationObjectLostCounter+=1;
+
             CancelCurrentGoal(cancelGoalPublisher, img_secs, img_nsecs);
             
-            if((goal_status==2 && goal_status_message=="")||(destinationObjectLostCounter == 100))
+            if((goal_status==2 && goal_status_message=="")||((image_tstamp - destinationObjectLostTime)>5.0))
             {
               currentStateMutex.lock();
               current_state = STATE_SEARCH;
@@ -1501,7 +1530,7 @@ int main( int argc, char** argv )
           }
           continue;
       }
-      destinationObjectLostCounter = 0;
+      destinationObjectLostFirst=true;
     }
     else
     {
@@ -2143,13 +2172,30 @@ tf::TransformListener *listener;
 void TransformListenerThread()
 {
   ros::Rate rate(100);
+  tf::TransformListener listener(ros::Duration(0.1));
   while(ros::ok())
   {
-    //transformListenerMutex.lock();
-    //std::cout<<"thread\n";
-    //listener->waitForTransform("/camera", "/map",
-    //                          ros::Time(0), ros::Duration(1.5));
-    //transformListenerMutex.unlock();
+    listener.waitForTransform("/camera", "/map",
+                                ros::Time(0), ros::Duration(0.5));
+    tf::StampedTransform transform;
+    try{
+      listener.lookupTransform("/camera", "/map",  
+                               ros::Time(0), transform);
+    }
+    catch (tf::TransformException ex){
+      ROS_ERROR("%s",ex.what());
+      ros::Duration(0.1).sleep();
+      continue;
+    }
+    cameraTransformMutex.lock();
+    cameraTimeStamp = transform.stamp_.sec+1000000000.0*transform.stamp_.nsec;
+    cameraX = transform.getOrigin().x();
+    cameraY = transform.getOrigin().y();
+    tf::Matrix3x3 m(transform.getRotation());
+    double roll, pitch, yaw;
+    m.getRPY(roll, pitch, yaw);
+    cameraYaw = yaw;
+    cameraTransformMutex.unlock();
     rate.sleep();
     ros::spinOnce();
   }
