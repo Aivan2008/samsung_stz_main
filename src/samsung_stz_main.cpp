@@ -1019,7 +1019,7 @@ int main( int argc, char** argv )
               //lost_counter+=1;
               //state_line<<", lost_counter="<<lost_counter<<" ";
               //if(lost_counter>=maximum_lost_frames)
-              ofs<<"["<<GetTimeString().c_str()<<"] "<<"Lost, delta = "<<(image_tstamp - last_succesful_detection_time)<<"\n";
+              std::cout<<"["<<GetTimeString().c_str()<<"] "<<"Lost, delta = "<<(image_tstamp - last_succesful_detection_time)<<"\n";
               if((image_tstamp - last_succesful_detection_time)>lost_frame_max_time)
               {
                 //ТУТ ОСТАНОВИТЬ РОБОТА!!!!
@@ -1147,16 +1147,21 @@ int main( int argc, char** argv )
         dest_angle = atan2(delta_y, delta_x);
         dest_x+=follow_meter_length*cos(dest_angle);
         dest_y+=follow_meter_length*sin(dest_angle);
+        //!!!!!!!!!!!!!!!!!!
+        delta_x = dest_x - odom_x;
+        delta_y = dest_y - odom_y;
+        //!!!!!!!!!!!!!!!!!!
         delta_angle = dest_angle-odom_yaw;
         delta_angle+=(delta_angle>M_PI) ? -M_PI*2 : (delta_angle<-M_PI) ? 2*M_PI : 0; 
         if(detection_received && update_goal) 
         { 
           print_line = true;
           state_line<<" gen goal"<<"\n";
-          ofs<<"["<<GetTimeString().c_str()<<"] "<<"Generate new goal nx="<<nx<<" ny="<<ny<<"na = "<<na<<"\n"; 
+          
           double na = destination_object[6];
           double nx = destination_object[9]+follow_meter_length*cos(na);
           double ny = destination_object[10]+follow_meter_length*sin(-na);
+          ofs<<"["<<GetTimeString().c_str()<<"] "<<"Generate new goal nx="<<nx<<" ny="<<ny<<"na = "<<na<<"\n"; 
           goal = GenerateGoal(img_secs, img_nsecs, nx, ny, -na, "camera");
           goal_updated=true;
         }
@@ -1852,6 +1857,7 @@ void imageCallback(const sensor_msgs::CompressedImageConstPtr& msg)
   {
     std::lock_guard<std::mutex> img_guard(imageMutex);
     currentImage = cv::imdecode(cv::Mat(msg->data),1);
+    //cv::resize(currentImage, currentImage, cv::Size(1280, 960));
     img_sec = msg->header.stamp.sec;
     img_nsec = msg->header.stamp.nsec;
   }
@@ -1936,10 +1942,12 @@ void commandCallback(const std_msgs::String::ConstPtr& msg)
   dmsg.data = std::string("debug_")+msg->data;
   debugCommandPub.publish(dmsg);
   ros::spinOnce();
-  std::lock_guard<std::mutex> cmd_guard(currentStateMutex);
+  //std::lock_guard<std::mutex> cmd_guard(currentStateMutex);
   if(msg->data==std::string("GATHER_CUBE") && current_state == STATE_SEARCH)
   {
+    currentStateMutex.lock();
     current_state = FOLLOW_CUBE;
+    currentStateMutex.unlock();
     rotate_to_goal_state = true;
     //UpdateCubeId();
   }
@@ -1951,7 +1959,9 @@ void commandCallback(const std_msgs::String::ConstPtr& msg)
     message.angular.z = 0;
     tp.publish(message);
     ros::spinOnce();
+    currentStateMutex.lock();
     current_state = STATE_SEARCH;
+    currentStateMutex.unlock();
   }
 }
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////

@@ -3,7 +3,7 @@
     </node>
     <node name="samsung_stz_main" pkg="samsung_stz_main" type="samsung_stz_main" output="screen" args="">
 <!--Процент высоты картинки выше которого мы объекты не рассматриваем как кубы-->
-        <param name="min_y_position" value="0.65"/>
+        <param name="min_y_position" value="0.60"/>
 <!--Минимальная уверенность детектора ниже которой объекты не рассматриваются-->
         <param name="minimal_conf" value="0.7"/>
 
@@ -36,7 +36,7 @@
         <param name="gathering_area_relative_width" value="0.2"/>
 
 <!-- Длина доезда в метрах -->
-        <param name="follow_meter_length" value="0.2"/>
+        <param name="follow_meter_length" value="0.5"/>
 <!-- Допустимое смещение от целевого положения в метрах по прибытию в точку подбора -->
         <param name="gathering_delta_pos_allowed" value="0.1"/>
 <!-- Допустимое смещение по углу от целевого объекта-->
